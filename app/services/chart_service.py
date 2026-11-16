@@ -1,20 +1,13 @@
 """Сервис для генерации графиков прогресса с помощью matplotlib."""
 import io
+from datetime import datetime, timedelta
+
 import matplotlib
 
 # ВАЖНО: Используем Agg бэкенд, чтобы рисовать без окна (для сервера)
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime
-
-import io
-import matplotlib
-
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from datetime import datetime, timedelta  # <--- Добавили timedelta
 
 
 def generate_progress_chart(dates: list[datetime], values: list[float],

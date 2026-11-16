@@ -60,7 +60,6 @@ async def render_approach_screen(
     from app.keyboards.workout_kb import cardio_done_kb, strength_summary_kb
     from app.render import render_strength_summary
     from app.utils import format_duration
-    import random
 
     ws = await session.get(WorkoutSession, session_id)
     ex = await session.get(Exercise, ex_id)
@@ -333,7 +332,7 @@ async def render_list(session: AsyncSession, session_id: int, user_id: int):
             t = f"{m} мин {s} сек" if m > 0 else f"{s} сек"
             timer_strs.append(f"⏱ <b>Таймер:</b> между упражнениями (осталось {t})")
 
-    for key, val in ACTIVE_TIMERS.items():
+    for key, val in list(ACTIVE_TIMERS.items()):
         if key.startswith(f"{session_id}_ex_"):
             rem = int((val["end_time"] - now).total_seconds())
             if rem > 0:
@@ -431,9 +430,6 @@ async def load_workout_with_exercises(session: AsyncSession, wt_id: int):
         )
     )
     return result.scalar_one_or_none()
-
-
-import re
 
 
 def calculate_personal_records(sets: list) -> dict:

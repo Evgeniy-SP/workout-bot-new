@@ -9,3 +9,9 @@ __pycache__/
 *.db
 backups/
 *.sql
+*.sql~
+
+# Покрытие тестами: в репо коммитим только coverage.svg
+.coverage
+coverage.xml
+.pytest_cache/

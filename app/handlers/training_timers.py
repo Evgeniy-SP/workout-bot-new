@@ -219,8 +219,9 @@ async def cb_timer_numeric_input(callback: CallbackQuery, state: FSMContext, ses
                 await callback.message.edit_text(text_screen, reply_markup=kb)
         else:
             ws = await session.get(WorkoutSession, session_id)
-            text_screen, kb = await render_list(session, session_id, ws.user_id)
-            await callback.message.edit_text(text_screen, reply_markup=kb)
+            if ws:
+                text_screen, kb = await render_list(session, session_id, ws.user_id)
+                await callback.message.edit_text(text_screen, reply_markup=kb)
 
         await callback.answer(f"Таймер на {seconds} сек запущен")
         return
@@ -275,9 +276,10 @@ async def fsm_timer_custom_save(message: Message, state: FSMContext, session: As
             ACTIVE_TIMERS[timer_key]["message_id"] = sent_msg.message_id
     else:
         ws = await session.get(WorkoutSession, session_id)
-        text_screen, kb = await render_list(session, session_id, ws.user_id)
-        sent_msg = await message.answer(text_screen, reply_markup=kb)
-        ACTIVE_TIMERS[timer_key]["message_id"] = sent_msg.message_id
+        if ws:
+            text_screen, kb = await render_list(session, session_id, ws.user_id)
+            sent_msg = await message.answer(text_screen, reply_markup=kb)
+            ACTIVE_TIMERS[timer_key]["message_id"] = sent_msg.message_id
 
 
 @router.callback_query(F.data == "tr_timer_dismiss")
