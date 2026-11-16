@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import SessionSet, SessionExerciseNote, WorkoutSession
+from app.utils import to_msk
 
 
 async def get_active_session(session: AsyncSession,
@@ -183,5 +184,47 @@ async def get_exercise_history(
             selectinload(SessionSet.exercise)
         )
         .order_by(WorkoutSession.started_at.asc())
+    )
+    return list(result.scalars())
+
+
+async def get_months_with_sessions(session: AsyncSession, user_id: int
+                                   ) -> list[tuple[int, int]]:
+    """Список (год, месяц), в которых у пользователя есть завершённые тренировки.
+
+    Отсортирован по возрастанию. Навигация аналитики листает ТОЛЬКО по
+    этим месяцам: пустые месяцы и большие перерывы между тренировками
+    пропускаются, а не прощёлкиваются по одному.
+    """
+    result = await session.execute(
+        select(WorkoutSession.started_at)
+        .where(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.finished_at.is_not(None)
+        )
+    )
+    months = {(to_msk(sa).year, to_msk(sa).month)
+              for sa in result.scalars() if sa}
+    return sorted(months)
+
+
+async def get_sessions_in_range(session: AsyncSession, user_id: int,
+                                start, end) -> list[WorkoutSession]:
+    """Завершённые сессии пользователя за период [start, end) с подходами."""
+    from sqlalchemy.orm import selectinload
+
+    result = await session.execute(
+        select(WorkoutSession)
+        .where(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.finished_at.is_not(None),
+            WorkoutSession.started_at >= start,
+            WorkoutSession.started_at < end,
+        )
+        .options(
+            selectinload(WorkoutSession.sets).selectinload(SessionSet.exercise),
+            selectinload(WorkoutSession.workout_type),
+        )
+        .order_by(WorkoutSession.started_at)
     )
     return list(result.scalars())

@@ -62,3 +62,50 @@ def generate_progress_chart(dates: list[datetime], values: list[float],
     plt.close(fig)
 
     return buf
+
+
+def generate_grouped_bar_chart(labels: list[str],
+                               series: list[tuple[str, list, str]],
+                               title: str, y_label: str) -> io.BytesIO:
+    """Сгруппированная столбчатая диаграмма: на каждую метку — столбик серии.
+
+    series — [(название, значения, цвет), ...]; длина значений = len(labels).
+    Нулевые значения не подписываем, чтобы не мусорить на пустых неделях.
+    """
+    plt.style.use('dark_background')
+
+    fig, ax = plt.subplots(figsize=(8, 4), dpi=150)
+
+    n = len(labels)
+    count = len(series)
+    width = 0.8 / count
+    x = range(n)
+
+    for i, (name, values, color) in enumerate(series):
+        offset = (i - (count - 1) / 2) * width
+        bars = ax.bar([xi + offset for xi in x], values, width=width,
+                      label=name, color=color)
+        for bar, v in zip(bars, values):
+            if v > 0:
+                ax.annotate(f'{v:g}',
+                            (bar.get_x() + bar.get_width() / 2, v),
+                            textcoords="offset points", xytext=(0, 4),
+                            ha='center', fontsize=8)
+
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels)
+    ax.set_title(title, fontsize=14, color='white', pad=15)
+    ax.set_ylabel(y_label, fontsize=12)
+    ax.set_xlabel('Неделя месяца (числа)', fontsize=12)
+    ax.grid(True, linestyle='--', alpha=0.3, axis='y')
+    ax.margins(y=0.15)  # запас сверху, чтобы легенда не перекрывала столбики
+    ax.legend(fontsize=10)
+
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', transparent=False, facecolor='#17212b')
+    buf.seek(0)
+    plt.close(fig)
+
+    return buf

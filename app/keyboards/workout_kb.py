@@ -662,8 +662,42 @@ def main_reply_kb() -> ReplyKeyboardMarkup:
     kb = ReplyKeyboardBuilder()
     kb.button(text="🏠 Главная")
     kb.button(text="📊 История")
-    kb.adjust(2)
+    kb.button(text="📅 Аналитика")
+    kb.adjust(3)
     return kb.as_markup(resize_keyboard=True)
+
+
+MONTH_NAMES = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+               "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
+
+
+def analytics_kb(year: int, month: int,
+                 prev_ym: tuple[int, int] | None,
+                 next_ym: tuple[int, int] | None) -> InlineKeyboardMarkup:
+    """Клавиатура дашборда: график + листание по месяцам С ДАННЫМИ.
+
+    prev_ym / next_ym — ближайшие месяцы с тренировками (год, месяц);
+    None — если в эту сторону листать некуда. Пустые месяцы пропускаем.
+    """
+    kb = InlineKeyboardBuilder()
+
+    kb.button(text="📈 График по неделям",
+              callback_data=f"an_chart:{year}:{month}")
+
+    nav_row = []
+    if prev_ym:
+        py, pm = prev_ym
+        nav_row.append(InlineKeyboardButton(
+            text=f"← {MONTH_NAMES[pm - 1]} {py}",
+            callback_data=f"an_month:{py}:{pm}"))
+    if next_ym:
+        ny, nm = next_ym
+        nav_row.append(InlineKeyboardButton(
+            text=f"{MONTH_NAMES[nm - 1]} {ny} →",
+            callback_data=f"an_month:{ny}:{nm}"))
+    kb.row(*nav_row)
+
+    return kb.as_markup()
 
 
 def start_inline_kb() -> InlineKeyboardMarkup:
