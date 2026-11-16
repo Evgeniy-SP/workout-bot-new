@@ -1,12 +1,18 @@
 """Хэндлеры для раздела «История тренировок»."""
+import asyncio
+
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.queries import get_user_sessions, get_user_sessions_count, get_session_details
-from app.keyboards.workout_kb import history_list_kb, history_details_kb
+from app.keyboards.workout_kb import history_list_kb, history_details_kb, exercise_progress_kb
 from app.render import render_history_details
-from app.services.training_service import get_user
+from app.services.chart_service import generate_progress_chart
+from app.services.progress_service import (
+    collect_workout_stats, daily_max_durations, daily_max_weights, to_chart_points,
+)
+from app.services.training_service import calculate_personal_records, get_user
 
 router = Router()
 
@@ -113,65 +119,55 @@ async def cb_history_view(callback: CallbackQuery, session: AsyncSession):
     await callback.answer()
 
 
+def _plural_runs(count: int) -> str:
+    """Склоняет слово 'раз' для русского языка."""
+    if count % 10 == 1 and count % 100 != 11:
+        return "раз"
+    if count % 10 in [2, 3, 4] and count % 100 not in [12, 13, 14]:
+        return "раза"
+    return "раз"
+
+
+def _format_time(sec: int | None) -> str:
+    if not sec:
+        return "—"
+    m, s = divmod(sec, 60)
+    return f"{m} мин {s} сек" if m > 0 else f"{s} сек"
+
+
 @router.callback_query(F.data.startswith("ex_progress:"))
 async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
     """Показывает график прогресса и личные рекорды."""
+    import re
+
+    from app.db.models import Exercise
+    from app.db.queries import get_exercise_history
+
     parts = callback.data.split(":")
     ex_id = int(parts[1])
     session_id = int(parts[2])
     page = int(parts[3])
 
-    from app.db.models import Exercise
-    from app.db.queries import get_exercise_history
-    from app.services.training_service import calculate_personal_records, get_user
-    from app.services.chart_service import generate_progress_chart
-    from app.keyboards.workout_kb import exercise_progress_kb
-    from aiogram.types import BufferedInputFile
-    import asyncio
-    import re
-    from collections import defaultdict
-    from datetime import datetime, time
-
     ex = await session.get(Exercise, ex_id)
     if not ex:
         return await callback.answer("Упражнение не найдено", show_alert=True)
 
-    # ПОЛУЧАЕМ ПОЛЬЗОВАТЕЛЯ
     user = await get_user(session, callback.from_user.id)
     if not user:
         return await callback.answer("Пользователь не найден", show_alert=True)
 
-    # ИЩЕМ ИСТОРИЮ ПО ИМЕНИ И ТИПУ
+    # ИЩЕМ ИСТОРИЮ ПО ИМЕНИ И ТИПУ (см. PROJECT_STATE.md: осознанное решение)
     history_sets = await get_exercise_history(session, user.id, ex.name, ex.kind)
     if not history_sets:
         return await callback.answer("Нет данных для графика", show_alert=True)
 
-    # === НОВЫЙ БЛОК: СТАТИСТИКА ПО ТРЕНИРОВКАМ ===
-    from collections import defaultdict
-
-    # Словарь: { "Название тренировки": {ID сессий} }
-    workout_stats = defaultdict(set)
-    for s in history_sets:
-        if s.session and s.session.workout_type:
-            workout_stats[s.session.workout_type.name].add(s.session.id)
-
-    stats_lines = []
-    for wt_name, session_ids in workout_stats.items():
-        count = len(session_ids)
-        # Склоняем слово "раз"
-        if count % 10 == 1 and count % 100 != 11:
-            word = "раз"
-        elif count % 10 in [2, 3, 4] and count % 100 not in [12, 13, 14]:
-            word = "раза"
-        else:
-            word = "раз"
-
-        # Используем \n для переноса строки перед каждым пунктом
-        stats_lines.append(f"• «{wt_name}» — {count} {word}")
-
-    # Собираем текст: заголовок + список с новой строки
+    # Статистика: в скольких тренировках каждого типа выполнялось упражнение
+    workout_stats = collect_workout_stats(history_sets)
+    stats_lines = [
+        f"• «{wt_name}» — {count} {_plural_runs(count)}"
+        for wt_name, count in workout_stats.items()
+    ]
     info_text = "🔄 <b>Выполнялось:</b>\n" + "\n".join(stats_lines)
-    # =================================================
 
     # --- ЛОГИКА ДЛЯ СИЛОВЫХ ---
     if ex.kind == "strength":
@@ -194,7 +190,7 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
 
         text = (
             f"📈 <b>Прогресс: {ex.name}</b>\n"
-            f"{info_text}\n\n"  # <--- ВСТАВИЛИ ИНФУ О ТРЕНИРОВКАХ
+            f"{info_text}\n\n"
             f"🏆 <b>Личные рекорды:</b>\n"
             f"⚖️ Максимальный вес: <b>{weight_display}</b>\n"
             f"💪 Лучший подход по тоннажу: <b>{best_set_text}</b>\n"
@@ -202,17 +198,7 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
             f"📉 График: максимальный вес за каждый день."
         )
 
-        # Данные для графика (группировка по дням)
-        daily_max = defaultdict(float)
-        for s in history_sets:
-            if s.session and s.session.started_at and s.weight_kg:
-                match = re.search(r'\d+(?:[.,]\d+)?', s.weight_kg.replace(',', '.'))
-                if match:
-                    w = float(match.group())
-                    from app.utils import to_msk
-                    day = to_msk(s.session.started_at).date()
-                    if w > daily_max[day]:
-                        daily_max[day] = w
+        daily_max = daily_max_weights(history_sets)
 
         if not daily_max:
             await callback.message.answer(text,
@@ -221,9 +207,7 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
             await callback.answer()
             return
 
-        sorted_days = sorted(daily_max.keys())
-        dates = [datetime.combine(d, time(12, 0)) for d in sorted_days]
-        values = [daily_max[d] for d in sorted_days]
+        dates, values = to_chart_points(daily_max)
         chart_title = f"Прогресс: {ex.name}"
         y_label = "Вес (кг)"
 
@@ -237,30 +221,16 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
                 if s.duration_seconds > max_duration:
                     max_duration = s.duration_seconds
 
-        def fmt_time(sec):
-            if not sec: return "—"
-            m, s = divmod(sec, 60)
-            return f"{m} мин {s} сек" if m > 0 else f"{s} сек"
-
         text = (
             f"📈 <b>Прогресс: {ex.name}</b>\n"
             f"{info_text}\n\n"
             f"🏆 <b>Личные рекорды:</b>\n"
-            f"⏱ Максимальное время за раз: <b>{fmt_time(max_duration)}</b>\n"
-            f"⏳ Общее время за всё время: <b>{fmt_time(total_duration)}</b>\n\n"
+            f"⏱ Максимальное время за раз: <b>{_format_time(max_duration)}</b>\n"
+            f"⏳ Общее время за всё время: <b>{_format_time(total_duration)}</b>\n\n"
             f"📉 График: максимальное время за каждый день."
         )
 
-        # ВОТ ЭТУ СТРОКУ НУЖНО ДОБАВИТЬ:
-        daily_max = defaultdict(int)
-
-        for s in history_sets:
-            if s.session and s.session.started_at and s.duration_seconds:
-                # ИСПРАВЛЕНИЕ: Конвертируем в МСК
-                from app.utils import to_msk
-                day = to_msk(s.session.started_at).date()
-                if s.duration_seconds > daily_max[day]:
-                    daily_max[day] = s.duration_seconds
+        daily_max = daily_max_durations(history_sets)
 
         if not daily_max:
             await callback.message.answer(text,
@@ -269,13 +239,12 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
             await callback.answer()
             return
 
-        sorted_days = sorted(daily_max.keys())
-        dates = [datetime.combine(d, time(12, 0)) for d in sorted_days]
-        values = [daily_max[d] / 60 for d in sorted_days]  # В минутах
+        dates, values = to_chart_points(daily_max)
+        values = [v / 60 for v in values]  # переводим секунды в минуты
         chart_title = f"Прогресс: {ex.name}"
         y_label = "Время (мин)"
 
-    # --- ГЕНЕРАЦИЯ И ОТПРАВКА ---
+    # --- ГЕНЕРАЦИЯ И ОТПРАВКА ГРАФИКА ---
     chart_buf = await asyncio.to_thread(generate_progress_chart, dates, values,
                                         chart_title, y_label)
     photo = BufferedInputFile(chart_buf.read(),
