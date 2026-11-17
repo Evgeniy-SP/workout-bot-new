@@ -9,18 +9,18 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.progress_service import (
-    collect_workout_stats, daily_max_durations, daily_max_weights,
-    parse_weight, to_chart_points,
+    collect_workout_stats, daily_max_durations, daily_max_reps,
+    daily_max_weights, parse_weight, to_chart_points,
 )
 
 
-def make_set(weight=None, duration=None, session_id=1, started_at=None,
-             wt_name="Тренировка А"):
+def make_set(weight=None, duration=None, reps=None, session_id=1,
+             started_at=None, wt_name="Тренировка А"):
     """Фабрика фейкового подхода с минимально нужными атрибутами."""
     wt = SimpleNamespace(name=wt_name)
     sess = SimpleNamespace(id=session_id, started_at=started_at, workout_type=wt)
     return SimpleNamespace(
-        session=sess, weight_kg=weight, duration_seconds=duration,
+        session=sess, weight_kg=weight, duration_seconds=duration, reps=reps,
     )
 
 
@@ -85,6 +85,25 @@ def test_daily_max_durations():
     ]
     daily = daily_max_durations(sets)
     assert list(daily.values()) == [180]
+
+
+# ─── daily_max_reps ──────────────────────────────────────────────
+def test_daily_max_reps_takes_best_set_of_day():
+    day1 = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
+    day2 = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+    sets = [
+        make_set(reps=8, started_at=day1),
+        make_set(reps=12, started_at=day1),   # лучший подход дня
+        make_set(reps=5, started_at=day1),
+        make_set(reps=20, started_at=day2),
+        make_set(reps=None, started_at=day2),  # без повторов — пропуск
+    ]
+    daily = daily_max_reps(sets)
+    assert list(daily.values()) == [12, 20]
+
+
+def test_daily_max_reps_empty():
+    assert daily_max_reps([]) == {}
 
 
 # ─── to_chart_points ─────────────────────────────────────────────

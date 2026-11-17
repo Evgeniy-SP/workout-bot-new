@@ -344,8 +344,23 @@ def render_history_details(ws) -> str:
         if s.completed:
             sets_by_ex[s.exercise.id].append(s)
 
+    # Заметки к упражнениям — показываем даже для упражнений без
+    # выполненных подходов (иначе заметка «теряется», см. #кардио-разминка)
+    notes_by_ex = defaultdict(list)
+    for n in (getattr(ws, "exercise_notes", None) or []):
+        notes_by_ex[n.exercise_id].append(n)
+
     if not sets_by_ex:
         text += "<i>Нет выполненных подходов.</i>"
+        if notes_by_ex:
+            text += "\n\n📝 <b>Заметки к упражнениям:</b>\n\n"
+            for ex_id, notes in notes_by_ex.items():
+                ex = notes[0].exercise
+                kind_icon = "🏋️" if ex.kind == "strength" else "🏃"
+                text += f"{kind_icon} <b>{ex.name}</b>\n"
+                for n in notes:
+                    text += f"📝 <i>{n.note}</i>\n"
+                text += "\n"
         return text
 
     text += "📋 <b>Детали по упражнениям:</b>\n\n"
@@ -375,6 +390,20 @@ def render_history_details(ws) -> str:
                     text += f" <i>(интервал {rest_str})</i>"
 
             text += "\n"
+
+        for n in notes_by_ex.get(ex_id, []):
+            text += f"📝 <i>{n.note}</i>\n"
+
         text += "\n"
+
+    # Упражнения, у которых есть заметка, но нет выполненных подходов
+    noted_only = [n for ex_id, notes in notes_by_ex.items()
+                  if ex_id not in sets_by_ex for n in notes]
+    if noted_only:
+        text += "📝 <b>Заметки к упражнениям без подходов:</b>\n\n"
+        for n in noted_only:
+            ex = n.exercise
+            kind_icon = "🏋️" if ex.kind == "strength" else "🏃"
+            text += f"{kind_icon} <b>{ex.name}</b>\n📝 <i>{n.note}</i>\n\n"
 
     return text.strip()

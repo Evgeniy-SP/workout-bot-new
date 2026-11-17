@@ -4,7 +4,7 @@ from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup, \
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from app.db.models import Exercise, WorkoutType
-from app.utils import format_weight, format_duration
+from app.utils import format_weight, format_duration, fmt_msk_date
 
 
 def workouts_list_kb(workouts: list[WorkoutType],
@@ -661,10 +661,169 @@ def main_reply_kb() -> ReplyKeyboardMarkup:
     """Постоянная клавиатура внизу экрана."""
     kb = ReplyKeyboardBuilder()
     kb.button(text="🏠 Главная")
+    kb.button(text="📒 Заметки")
     kb.button(text="📊 История")
     kb.button(text="📅 Аналитика")
-    kb.adjust(3)
+    kb.adjust(1, 3)
     return kb.as_markup(resize_keyboard=True)
+
+
+# ─── Архив заметок ────────────────────────────────────────────────
+
+NOTES_PER_PAGE = 12        # упражнений в списке
+NOTES_WS_PER_PAGE = 8      # тренировок в списке
+NOTES_PER_EX_PAGE = 10     # заметок в ленте по упражнению
+
+
+def notes_main_kb(exercises: list[tuple], page: int,
+                  has_next: bool) -> InlineKeyboardMarkup:
+    """Главный экран архива: упражнения с заметками + поиск."""
+    kb = InlineKeyboardBuilder()
+
+    for ex, cnt in exercises:
+        kb.button(text=f"🤸 {ex.name} ({cnt})",
+                  callback_data=f"notes_ex:{ex.id}:0")
+    kb.adjust(2)
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️",
+                                        callback_data=f"notes_main:{page - 1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="➡️",
+                                        callback_data=f"notes_main:{page + 1}"))
+    if nav:
+        kb.row(*nav)
+
+    kb.row(InlineKeyboardButton(text="📋 Заметки к тренировкам",
+                                callback_data="notes_ws:0"))
+    kb.row(InlineKeyboardButton(text="🔍 Поиск по заметкам",
+                                callback_data="notes_search"))
+    kb.row(InlineKeyboardButton(text="🏠 В главное меню",
+                                callback_data="wt_list"))
+    return kb.as_markup()
+
+
+def _note_snippet(text: str, width: int = 28) -> str:
+    """Короткий фрагмент заметки для подписи кнопки."""
+    one_line = " ".join(str(text).split())
+    return one_line if len(one_line) <= width else one_line[:width - 1] + "…"
+
+
+def _fit_label(*parts: str, max_len: int = 63) -> str:
+    """Склеивает части подписи кнопки, ужимая до лимита Telegram (64)."""
+    label = "".join(parts)
+    return label if len(label) <= max_len else label[:max_len - 1] + "…"
+
+
+def notes_exercise_kb(exercise_id: int, page: int,
+                      has_next: bool,
+                      items: list[tuple[int, str, str]] | None = None,
+                      origin: str = "",
+                      ) -> InlineKeyboardMarkup:
+    """Навигация ленты заметок по упражнению.
+
+    items — [(id тренировки, дата, текст заметки)]: каждая заметка —
+    кнопка, открывающая тренировку, где она написана.
+    origin — «адрес возврата» (например, «hist_view:5:3»): если ленту
+    открыли с экрана прогресса, «Назад» ведёт туда, а не в общий архив.
+    """
+    kb = InlineKeyboardBuilder()
+
+    suffix = f":{origin}" if origin else ""
+
+    for ws_id, date_str, note_text in (items or []):
+        # «Адрес возврата» двойной: сначала в эту ленту (notes_ex), затем —
+        # куда идти из ленты «Назад» (origin). Иначе цепочка
+        # история→тренировка→прогресс→лента→тренировка обрывается
+        # и возврат ведёт только в общий архив.
+        kb.button(
+            text=_fit_label(f"📅 {date_str} — ", _note_snippet(note_text)),
+            callback_data=(f"hist_view:{ws_id}:0:0:notes_ex:{exercise_id}:"
+                           f"{page}{suffix}"))
+    kb.adjust(1)
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(
+            text="⬅️",
+            callback_data=f"notes_ex:{exercise_id}:{page - 1}{suffix}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(
+            text="➡️",
+            callback_data=f"notes_ex:{exercise_id}:{page + 1}{suffix}"))
+    if nav:
+        kb.row(*nav)
+
+    if origin:
+        kb.row(InlineKeyboardButton(text="⬅️ Назад к тренировке",
+                                    callback_data=origin))
+    else:
+        kb.row(InlineKeyboardButton(text="⬅️ К заметкам",
+                                    callback_data="notes_main:0"))
+    return kb.as_markup()
+
+
+def notes_workouts_kb(sessions: list, page: int,
+                      has_next: bool) -> InlineKeyboardMarkup:
+    """Список тренировок с заметками."""
+    kb = InlineKeyboardBuilder()
+
+    for ws in sessions:
+        wt_name = ws.workout_type.name if ws.workout_type else "Тренировка"
+        kb.button(text=f"📋 {wt_name} | {fmt_msk_date(ws.started_at)[:5]}",
+                  callback_data=f"notes_ws_view:{ws.id}:{page}")
+    kb.adjust(1)
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️",
+                                        callback_data=f"notes_ws:{page - 1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="➡️",
+                                        callback_data=f"notes_ws:{page + 1}"))
+    if nav:
+        kb.row(*nav)
+
+    kb.row(InlineKeyboardButton(text="⬅️ К заметкам",
+                                callback_data="notes_main:0"))
+    return kb.as_markup()
+
+
+def notes_workout_view_kb(session_id: int, page: int) -> InlineKeyboardMarkup:
+    """Просмотр заметки к тренировке."""
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🏋️ Открыть тренировку",
+                                callback_data=f"hist_view:{session_id}:0:0:notes_ws:{page}"))
+    kb.row(InlineKeyboardButton(text="⬅️ Назад",
+                                callback_data=f"notes_ws:{page}"))
+    return kb.as_markup()
+
+
+def notes_search_kb() -> InlineKeyboardMarkup:
+    """Кнопка возврата с экрана результатов поиска."""
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="⬅️ К заметкам",
+                                callback_data="notes_main:0"))
+    return kb.as_markup()
+
+
+def notes_search_results_kb(items: list[tuple]) -> InlineKeyboardMarkup:
+    """Результаты поиска: каждая заметка — кнопка, открывающая тренировку.
+
+    items — [(id сессии, иконка, название, дата, текст заметки)].
+    """
+    kb = InlineKeyboardBuilder()
+    for sess_id, icon, title, date_str, note_text in items:
+        kb.button(
+            text=_fit_label(f"{icon} {title} · {date_str} — ",
+                            _note_snippet(note_text, 20)),
+            callback_data=f"hist_view:{sess_id}:0:0:notes_main:0")
+    kb.adjust(1)
+
+    kb.row(InlineKeyboardButton(text="⬅️ К заметкам",
+                                callback_data="notes_main:0"))
+    return kb.as_markup()
 
 
 MONTH_NAMES = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
@@ -777,8 +936,13 @@ def text_weight_kb() -> InlineKeyboardMarkup:
 
 
 def history_list_kb(sessions: list, page: int,
-                    has_next: bool) -> InlineKeyboardMarkup:
-    """Клавиатура для списка истории с пагинацией."""
+                    has_next: bool,
+                    wt_id: int | None = None) -> InlineKeyboardMarkup:
+    """Клавиатура для списка истории с пагинацией.
+
+    wt_id — активный фильтр по типу тренировки (сохраняется в callbacks,
+    чтобы пагинация и возврат из деталей не сбрасывали фильтр).
+    """
     kb = InlineKeyboardBuilder()
 
     for ws in sessions:
@@ -810,28 +974,54 @@ def history_list_kb(sessions: list, page: int,
 
         kb.button(
             text=btn_text,
-            callback_data=f"hist_view:{ws.id}:{page}"
+            callback_data=f"hist_view:{ws.id}:{page}:{wt_id or 0}"
         )
 
-    # Пагинация (Назад/Вперед в один ряд)
+    # Пагинация (Назад/Вперед в один ряд), wt_id сохраняется в callback
     nav_buttons = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад",
-                                                callback_data=f"hist_page:{page - 1}"))
+        nav_buttons.append(InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=f"hist_page:{page - 1}:{wt_id or 0}"))
     if has_next:
-        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️",
-                                                callback_data=f"hist_page:{page + 1}"))
+        nav_buttons.append(InlineKeyboardButton(
+            text="Вперед ➡️",
+            callback_data=f"hist_page:{page + 1}:{wt_id or 0}"))
 
     if nav_buttons:
         kb.row(*nav_buttons)
 
+    # Фильтр по типу тренировки / сброс активного фильтра
+    if wt_id:
+        kb.row(InlineKeyboardButton(text="✖️ Сбросить фильтр",
+                                    callback_data="hist_page:0:0"))
+    else:
+        kb.row(InlineKeyboardButton(text="🔍 Фильтр по типу",
+                                    callback_data="hist_filter"))
+
     kb.row(
         InlineKeyboardButton(text="🏠 В главное меню", callback_data="wt_list"))
 
-    # Все кнопки тренировок по 1 в ряд
-    adjust_sizes = [1] * len(sessions)
-    kb.adjust(*adjust_sizes)
+    # Кнопки тренировок — по одной в ряд
+    kb.adjust(*([1] * len(sessions)))
 
+    return kb.as_markup()
+
+
+def history_filter_kb(types_with_counts: list[tuple]) -> InlineKeyboardMarkup:
+    """Клавиатура выбора типа тренировки для фильтрации истории.
+
+    types_with_counts — [(WorkoutType, количество завершённых сессий), ...].
+    """
+    kb = InlineKeyboardBuilder()
+
+    for wt, cnt in types_with_counts:
+        kb.button(text=f"🏋️ {wt.name} ({cnt})",
+                  callback_data=f"hist_setfilter:{wt.id}")
+    kb.adjust(1)
+
+    kb.row(InlineKeyboardButton(text="🚫 Отмена",
+                                callback_data="hist_page:0:0"))
     return kb.as_markup()
 
 
@@ -843,10 +1033,27 @@ def history_details_kb(page: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def exercise_progress_kb(session_id: int, page: int) -> InlineKeyboardMarkup:
-    """Клавиатура для экрана прогресса упражнения."""
+def exercise_progress_kb(session_id: int, page: int,
+                         exercise_id: int | None = None,
+                         back_cb: str | None = None,
+                         show_notes_btn: bool = True,
+                         ) -> InlineKeyboardMarkup:
+    """Клавиатура для экрана прогресса упражнения.
+
+    back_cb — куда вести кнопку «Назад» (если None — в детали тренировки).
+    show_notes_btn — прятать «📒 Заметки по упражнению», если мы и так
+    пришли сюда из архива заметок (иначе кнопка замыкает петлю).
+    """
     kb = InlineKeyboardBuilder()
+    # Архив заметок по этому упражнению (кнопка из гибридного сценария).
+    # В конец зашит «адрес возврата» — лента в этом случае вернёт
+    # пользователя назад в детали тренировки, а не в общий архив.
+    if exercise_id and show_notes_btn:
+        kb.button(text="📒 Заметки по упражнению",
+                  callback_data=(f"notes_ex:{exercise_id}:0:"
+                                 f"hist_view:{session_id}:{page}"))
     # Возвращаемся к деталям этой же тренировки, откуда пришли
-    kb.button(text="⬅️ Назад к истории", callback_data=f"hist_view:{session_id}:{page}")
+    kb.button(text="⬅️ Назад к тренировке",
+              callback_data=back_cb or f"hist_view:{session_id}:{page}")
     kb.adjust(1)
     return kb.as_markup()

@@ -40,3 +40,8 @@ class TrainingFSM(StatesGroup):
     entering_exercise_note = State()
     entering_rest_time = State()
     entering_session_note = State()
+
+
+class NotesSearch(StatesGroup):
+    """Поиск по архиву заметок."""
+    entering_query = State()

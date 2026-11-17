@@ -1,7 +1,10 @@
 import pytest
 from datetime import datetime, timezone, timedelta
 from app.db.models import User, WorkoutType, WorkoutSession
-from app.db.queries import get_user_sessions, get_user_sessions_count
+from app.db.queries import (
+    get_user_sessions, get_user_sessions_count,
+    get_workout_types_with_sessions,
+)
 
 
 @pytest.mark.asyncio
@@ -51,3 +54,67 @@ async def test_get_user_sessions_pagination(session):
     # Тест 3: Общее количество
     count = await get_user_sessions_count(session, user.id)
     assert count == 7
+
+
+@pytest.mark.asyncio
+async def test_get_user_sessions_filter_by_workout_type(session):
+    """Фильтр истории по типу тренировки: только сессии этого типа."""
+    user = User(tg_id=1, full_name="Test")
+    wt_a = WorkoutType(user=user, name="Верх")
+    wt_b = WorkoutType(user=user, name="Низ")
+    session.add_all([user, wt_a, wt_b])
+    await session.commit()
+
+    now = datetime.now(timezone.utc)
+    for i in range(3):
+        session.add(WorkoutSession(
+            user_id=user.id, workout_type_id=wt_a.id,
+            started_at=now - timedelta(days=i),
+            finished_at=now - timedelta(days=i) + timedelta(hours=1)))
+    session.add(WorkoutSession(
+        user_id=user.id, workout_type_id=wt_b.id,
+        started_at=now - timedelta(days=5),
+        finished_at=now - timedelta(days=5) + timedelta(hours=1)))
+    # Незавершённая сессия — в историю не должна попасть
+    session.add(WorkoutSession(
+        user_id=user.id, workout_type_id=wt_a.id,
+        started_at=now - timedelta(days=2), finished_at=None))
+    await session.commit()
+
+    sessions_a = await get_user_sessions(session, user.id, 0, 5,
+                                         wt_id=wt_a.id)
+    assert len(sessions_a) == 3
+    assert all(ws.workout_type_id == wt_a.id for ws in sessions_a)
+
+    count_a = await get_user_sessions_count(session, user.id, wt_id=wt_a.id)
+    assert count_a == 3
+
+    # Без фильтра — все завершённые
+    all_sessions = await get_user_sessions(session, user.id, 0, 10)
+    assert len(all_sessions) == 4
+
+
+@pytest.mark.asyncio
+async def test_get_workout_types_with_sessions(session):
+    """Только типы с завершёнными сессиями, с правильными счётчиками."""
+    user = User(tg_id=1, full_name="Test")
+    wt_a = WorkoutType(user=user, name="Верх")
+    wt_b = WorkoutType(user=user, name="Низ")
+    wt_c = WorkoutType(user=user, name="Пустой")  # сессий не будет
+    session.add_all([user, wt_a, wt_b, wt_c])
+    await session.commit()
+
+    now = datetime.now(timezone.utc)
+    for i in range(2):
+        session.add(WorkoutSession(
+            user_id=user.id, workout_type_id=wt_a.id,
+            started_at=now - timedelta(days=i),
+            finished_at=now - timedelta(days=i) + timedelta(hours=1)))
+    session.add(WorkoutSession(
+        user_id=user.id, workout_type_id=wt_b.id,
+        started_at=now - timedelta(days=3),
+        finished_at=now - timedelta(days=3) + timedelta(hours=1)))
+    await session.commit()
+
+    rows = await get_workout_types_with_sessions(session, user.id)
+    assert [(wt.name, cnt) for wt, cnt in rows] == [("Верх", 2), ("Низ", 1)]

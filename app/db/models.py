@@ -100,6 +100,9 @@ class WorkoutSession(Base):
     sets: Mapped[list["SessionSet"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
     )
+    exercise_notes: Mapped[list["SessionExerciseNote"]] = relationship(
+        cascade="all, delete-orphan"
+    )
 
 
 class SessionSet(Base):
@@ -131,6 +134,7 @@ class SessionExerciseNote(Base):
     session_id: Mapped[int] = mapped_column(ForeignKey("workout_sessions.id", ondelete="CASCADE"), index=True)
     exercise_id: Mapped[int] = mapped_column(ForeignKey("exercises.id", ondelete="CASCADE"), index=True)
     note: Mapped[str] = mapped_column(Text)
+    exercise: Mapped["Exercise"] = relationship()
 
 
 class SessionSkippedExercise(Base):

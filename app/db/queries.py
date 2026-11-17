@@ -4,10 +4,12 @@
 """
 from collections import defaultdict
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import SessionSet, SessionExerciseNote, WorkoutSession
+from app.db.models import (
+    Exercise, SessionExerciseNote, SessionSet, WorkoutSession, WorkoutType,
+)
 from app.utils import to_msk
 
 
@@ -108,12 +110,16 @@ async def get_last_workout_note(
 
 
 async def get_user_sessions(
-        session: AsyncSession, user_id: int, offset: int, limit: int
+        session: AsyncSession, user_id: int, offset: int, limit: int,
+        wt_id: int | None = None,
 ) -> list[WorkoutSession]:
-    """Получает список завершенных тренировок с пагинацией."""
+    """Получает список завершенных тренировок с пагинацией.
+
+    wt_id — опциональный фильтр по типу тренировки (фильтры истории).
+    """
     from sqlalchemy.orm import selectinload
 
-    result = await session.execute(
+    stmt = (
         select(WorkoutSession)
         .where(
             WorkoutSession.user_id == user_id,
@@ -127,20 +133,53 @@ async def get_user_sessions(
         .offset(offset)
         .limit(limit)
     )
+    if wt_id:
+        stmt = stmt.where(WorkoutSession.workout_type_id == wt_id)
+
+    result = await session.execute(stmt)
     return list(result.scalars())
 
 
-async def get_user_sessions_count(session: AsyncSession, user_id: int) -> int:
+async def get_user_sessions_count(session: AsyncSession, user_id: int,
+                                  wt_id: int | None = None) -> int:
     """Считает общее количество завершенных тренировок для пагинации."""
     from sqlalchemy import func
-    result = await session.scalar(
-        select(func.count(WorkoutSession.id))
-        .where(
-            WorkoutSession.user_id == user_id,
-            WorkoutSession.finished_at.is_not(None)
-        )
+
+    stmt = select(func.count(WorkoutSession.id)).where(
+        WorkoutSession.user_id == user_id,
+        WorkoutSession.finished_at.is_not(None)
     )
+    if wt_id:
+        stmt = stmt.where(WorkoutSession.workout_type_id == wt_id)
+
+    result = await session.scalar(stmt)
     return result or 0
+
+
+async def get_workout_types_with_sessions(
+        session: AsyncSession, user_id: int
+) -> list[tuple]:
+    """Типы тренировок с числом завершённых сессий — для фильтра истории.
+
+    Возвращает [(WorkoutType, количество завершённых тренировок), ...]
+    в алфавитном порядке. Архивные типы тоже включаем: у них остаётся
+    история, которую пользователь может захотеть посмотреть.
+    """
+    from sqlalchemy import func
+    from app.db.models import WorkoutType
+
+    result = await session.execute(
+        select(WorkoutType, func.count(WorkoutSession.id))
+        .join(WorkoutSession,
+              WorkoutSession.workout_type_id == WorkoutType.id)
+        .where(
+            WorkoutType.user_id == user_id,
+            WorkoutSession.finished_at.is_not(None),
+        )
+        .group_by(WorkoutType.id)
+        .order_by(WorkoutType.name)
+    )
+    return list(result.all())
 
 
 async def get_session_details(session: AsyncSession,
@@ -155,7 +194,8 @@ async def get_session_details(session: AsyncSession,
         .options(
             selectinload(WorkoutSession.workout_type),
             selectinload(WorkoutSession.sets).selectinload(SessionSet.exercise),
-            selectinload(WorkoutSession.sets)
+            selectinload(WorkoutSession.exercise_notes)
+            .selectinload(SessionExerciseNote.exercise),
         )
     )
     return result.scalar_one_or_none()
@@ -206,6 +246,175 @@ async def get_months_with_sessions(session: AsyncSession, user_id: int
     months = {(to_msk(sa).year, to_msk(sa).month)
               for sa in result.scalars() if sa}
     return sorted(months)
+
+
+# ─── Архив заметок ────────────────────────────────────────────────
+
+
+async def get_exercises_with_notes(session: AsyncSession,
+                                   user_id: int) -> list[tuple]:
+    """Упражнения пользователя, у которых есть заметки, с количеством.
+
+    Возвращает [(Exercise, количество заметок), ...] по алфавиту.
+    """
+    result = await session.execute(
+        select(Exercise, func.count(SessionExerciseNote.id))
+        .join(SessionExerciseNote,
+              SessionExerciseNote.exercise_id == Exercise.id)
+        .join(WorkoutSession,
+              WorkoutSession.id == SessionExerciseNote.session_id)
+        .where(WorkoutSession.user_id == user_id)
+        .group_by(Exercise.id)
+        .order_by(Exercise.name)
+    )
+    return list(result.all())
+
+
+async def get_exercise_notes(session: AsyncSession, user_id: int,
+                             exercise_id: int, limit: int = 10,
+                             offset: int = 0) -> list[tuple]:
+    """Заметки к упражнению (от новых к старым) с датами сессий.
+
+    Возвращает [(SessionExerciseNote, WorkoutSession), ...].
+    """
+    result = await session.execute(
+        select(SessionExerciseNote, WorkoutSession)
+        .join(WorkoutSession,
+              WorkoutSession.id == SessionExerciseNote.session_id)
+        .where(
+            WorkoutSession.user_id == user_id,
+            SessionExerciseNote.exercise_id == exercise_id,
+        )
+        .order_by(WorkoutSession.started_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(result.all())
+
+
+async def get_session_exercise_note(session: AsyncSession, session_id: int,
+                                    exercise_id: int) -> str | None:
+    """Заметка к упражнению в КОНКРЕТНОЙ тренировке (None, если не писали)."""
+    result = await session.execute(
+        select(SessionExerciseNote.note)
+        .where(SessionExerciseNote.session_id == session_id,
+               SessionExerciseNote.exercise_id == exercise_id)
+        .order_by(SessionExerciseNote.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def count_exercise_notes(session: AsyncSession, user_id: int,
+                               exercise_id: int) -> int:
+    """Сколько заметок у упражнения (для пагинации ленты)."""
+    result = await session.scalar(
+        select(func.count(SessionExerciseNote.id))
+        .join(WorkoutSession,
+              WorkoutSession.id == SessionExerciseNote.session_id)
+        .where(
+            WorkoutSession.user_id == user_id,
+            SessionExerciseNote.exercise_id == exercise_id,
+        )
+    )
+    return result or 0
+
+
+async def get_sessions_with_notes(session: AsyncSession, user_id: int,
+                                  limit: int = 8,
+                                  offset: int = 0) -> list[WorkoutSession]:
+    """Завершённые тренировки с непустыми заметками (от новых к старым)."""
+    from sqlalchemy.orm import selectinload
+
+    result = await session.execute(
+        select(WorkoutSession)
+        .where(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.finished_at.is_not(None),
+            WorkoutSession.notes.is_not(None),
+            WorkoutSession.notes != "",
+        )
+        .options(selectinload(WorkoutSession.workout_type))
+        .order_by(WorkoutSession.started_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(result.scalars())
+
+
+async def count_sessions_with_notes(session: AsyncSession,
+                                    user_id: int) -> int:
+    """Сколько тренировок с заметками (для пагинации)."""
+    result = await session.scalar(
+        select(func.count(WorkoutSession.id))
+        .where(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.finished_at.is_not(None),
+            WorkoutSession.notes.is_not(None),
+            WorkoutSession.notes != "",
+        )
+    )
+    return result or 0
+
+
+async def search_notes(session: AsyncSession, user_id: int, query: str,
+                       limit: int = 20) -> list[tuple]:
+    """Регистронезависимый поиск по всем заметкам.
+
+    Возвращает [(дата сессии, вид, название, текст, id сессии), ...]
+    от новых к старым. Вид: 'exercise' (название = имя упражнения) или
+    'workout' (название = тип тренировки).
+
+    Фильтрация в Python через casefold(): корректно работает с кириллицей
+    на любой БД (SQLite lower() умеет только ASCII). Объёмы заметок в
+    личном боте — сотни строк, фильтрация мгновенная.
+    """
+    needle = query.strip().casefold()
+
+    ex_stmt = (
+        select(
+            WorkoutSession.started_at,
+            Exercise.name,
+            SessionExerciseNote.note,
+            WorkoutSession.id,
+        )
+        .select_from(SessionExerciseNote)
+        .join(WorkoutSession,
+              WorkoutSession.id == SessionExerciseNote.session_id)
+        .join(Exercise, Exercise.id == SessionExerciseNote.exercise_id)
+        .where(WorkoutSession.user_id == user_id)
+    )
+    ws_stmt = (
+        select(
+            WorkoutSession.started_at,
+            WorkoutType.name,
+            WorkoutSession.notes,
+            WorkoutSession.id,
+        )
+        .select_from(WorkoutSession)
+        .join(WorkoutType,
+              WorkoutType.id == WorkoutSession.workout_type_id)
+        .where(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.finished_at.is_not(None),
+            WorkoutSession.notes.is_not(None),
+            WorkoutSession.notes != "",
+        )
+    )
+
+    ex_rows = list((await session.execute(ex_stmt)).all())
+    ws_rows = list((await session.execute(ws_stmt)).all())
+
+    hits = []
+    for date_s, name, text, sess_id in ex_rows:
+        if needle in text.casefold():
+            hits.append((date_s, "exercise", name, text, sess_id))
+    for date_s, name, text, sess_id in ws_rows:
+        if needle in text.casefold():
+            hits.append((date_s, "workout", name, text, sess_id))
+
+    hits.sort(key=lambda r: r[0], reverse=True)
+    return hits[:limit]
 
 
 async def get_sessions_in_range(session: AsyncSession, user_id: int,

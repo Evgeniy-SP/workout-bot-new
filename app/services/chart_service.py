@@ -64,6 +64,55 @@ def generate_progress_chart(dates: list[datetime], values: list[float],
     return buf
 
 
+def generate_progress_chart_two(suptitle: str,
+                                upper: tuple, lower: tuple) -> io.BytesIO:
+    """Две панели друг под другом с общей осью X (например, вес + повторы).
+
+    upper/lower — кортежи (даты, значения, заголовок панели, подпись оси Y,
+    цвет). Заголовок всей картинки — suptitle.
+    """
+    plt.style.use('dark_background')
+
+    fig, axes = plt.subplots(2, 1, figsize=(8, 6.5), dpi=150, sharex=True)
+    fig.suptitle(suptitle, fontsize=14, color='white')
+
+    for ax, (dates, values, title, y_label, color) in zip(axes, (upper, lower)):
+        if len(dates) == 1:
+            ax.plot(dates, values, marker='o', linestyle='',
+                    color=color, markersize=12)
+        else:
+            ax.plot(dates, values, marker='o', linestyle='-', color=color,
+                    linewidth=2, markersize=6)
+        ax.set_title(title, fontsize=12, color='white', pad=8)
+        ax.set_ylabel(y_label, fontsize=11)
+        ax.grid(True, linestyle='--', alpha=0.3)
+        ax.margins(y=0.15)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d.%m'))
+        for x, y in zip(dates, values):
+            ax.annotate(f'{y:g}', (x, y), textcoords="offset points",
+                        xytext=(0, 8), ha='center', fontsize=8)
+
+    # Подписи по оси X — ВСЕ фактические даты из обеих панелей (общая ось).
+    # Иначе matplotlib сам выбирает шаг ("через день"), и даты на графике
+    # не совпадают с реальными датами тренировок.
+    all_dates = sorted(set(upper[0]) | set(lower[0]))
+    if len(all_dates) <= 15:  # при небольшом числе точек подписываем каждую
+        axes[1].set_xticks(all_dates)
+        axes[1].set_xticklabels(
+            [d.strftime('%d.%m') for d in all_dates],
+            rotation=45, ha='right', fontsize=9)
+
+    axes[1].set_xlabel('Дата', fontsize=11)
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', transparent=False, facecolor='#17212b')
+    buf.seek(0)
+    plt.close(fig)
+
+    return buf
+
+
 def generate_grouped_bar_chart(labels: list[str],
                                series: list[tuple[str, list, str]],
                                title: str, y_label: str) -> io.BytesIO:

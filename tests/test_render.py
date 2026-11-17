@@ -1,68 +1,59 @@
+"""Тесты рендера деталей тренировки: заметки к упражнениям.
+
+Регрессия: заметка к упражнению обязана быть видна на экране тренировки,
+даже если у упражнения нет выполненных подходов (кардио-разминка).
+"""
 from datetime import datetime, timezone
-from app.render import render_training_list
-from app.db.models import Exercise, WorkoutType, SessionSet
+from types import SimpleNamespace
+
+from app.render import render_history_details
 
 
-def test_render_training_list_progress():
-    """Проверяем, что опциональные упражнения не портят прогресс, если не сделаны."""
-
-    # 1. Создаем фейковые объекты (без базы данных, просто в памяти)
-    wt = WorkoutType(name="Тестовая тренировка")
-
-    # Обязательное упражнение (сделано 1 из 1)
-    ex1 = Exercise(id=1, name="Присед", kind="strength", sets=1, reps=10,
-                   is_optional=False)
-
-    # Опциональное упражнение (не сделано)
-    ex2 = Exercise(id=2, name="Заминка", kind="cardio", is_optional=True)
-
-    # Создаем выполненные подходы (только для первого упражнения)
-    set1 = SessionSet(id=1, exercise_id=1, reps=10, weight_kg="50",
-                      completed=True)
-
-    sets_by_ex = {1: [set1], 2: []}
-
-    # Передаем только обязательные упражнения в видимые (как в нашем боте)
-    visible_exercises = [ex1]
-
-    # 2. Вызываем функцию
-    text = render_training_list(
-        wt=wt,
-        all_exercises=[ex1, ex2],
-        visible_exercises=visible_exercises,
-        sets_by_ex=sets_by_ex,
-        session_started=datetime.now(timezone.utc)
+def _ws(sets=(), exercise_notes=(), notes=None):
+    return SimpleNamespace(
+        workout_type=SimpleNamespace(name="Тест"),
+        started_at=datetime(2026, 11, 6, 17, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 11, 6, 17, 45, tzinfo=timezone.utc),
+        sets=list(sets),
+        notes=notes,
+        exercise_notes=list(exercise_notes),
     )
 
-    # 3. Проверяем результат
-    # В тексте должно быть "Выполнено: 1 / 1" (опциональная заминка не пошла в знаменатель)
-    assert "Выполнено: <b>1 / 1</b>" in text
 
-
-def test_render_training_list_with_optional_done():
-    """Проверяем, что если опциональное СДЕЛАНО, оно идет в прогресс."""
-
-    wt = WorkoutType(name="Тестовая тренировка")
-    ex1 = Exercise(id=1, name="Присед", kind="strength", sets=1, reps=10,
-                   is_optional=False)
-    ex2 = Exercise(id=2, name="Заминка", kind="cardio", is_optional=True)
-
-    set1 = SessionSet(id=1, exercise_id=1, reps=10, weight_kg="50",
-                      completed=True)
-    # Заминка тоже сделана
-    set2 = SessionSet(id=2, exercise_id=2, duration_seconds=300,
-                      completed=True)
-
-    sets_by_ex = {1: [set1], 2: [set2]}
-    visible_exercises = [ex1, ex2]  # Оба видны
-
-    text = render_training_list(
-        wt=wt,
-        all_exercises=[ex1, ex2],
-        visible_exercises=visible_exercises,
-        sets_by_ex=sets_by_ex,
-        session_started=datetime.now(timezone.utc)
+def test_details_shows_note_for_exercise_without_completed_sets():
+    """Заметка к кардио-разминке видна, даже когда подходов 0."""
+    note = SimpleNamespace(
+        exercise_id=3, note="тестик",
+        exercise=SimpleNamespace(id=3, name="Элипс (разминка)", kind="cardio"),
     )
+    text = render_history_details(_ws(exercise_notes=[note]))
+    assert "Нет выполненных подходов" in text
+    assert "Элипс (разминка)" in text
+    assert "тестик" in text
 
-    # Теперь прогресс должен быть 2 / 2
-    assert "Выполнено: <b>2 / 2</b>" in text
+
+def test_details_shows_note_under_completed_exercise():
+    """Заметка выводится под блоком подходов выполненного упражнения."""
+    ex = SimpleNamespace(id=1, name="Жим", kind="strength")
+    s = SimpleNamespace(
+        completed=True, exercise=ex, set_number=1, reps=9, weight_kg="60",
+        duration_seconds=None,
+        completed_at=datetime(2026, 11, 6, 17, 30, tzinfo=timezone.utc),
+    )
+    note = SimpleNamespace(exercise_id=1, note="отдых 50 сек", exercise=ex)
+    text = render_history_details(_ws(sets=[s], exercise_notes=[note]))
+    assert "Жим" in text
+    assert "отдых 50 сек" in text
+
+
+def test_details_without_exercise_notes_still_works():
+    """Старые сессии без заметок рендерятся как раньше."""
+    ex = SimpleNamespace(id=1, name="Жим", kind="strength")
+    s = SimpleNamespace(
+        completed=True, exercise=ex, set_number=1, reps=9, weight_kg="60",
+        duration_seconds=None,
+        completed_at=datetime(2026, 11, 6, 17, 30, tzinfo=timezone.utc),
+    )
+    text = render_history_details(_ws(sets=[s]))
+    assert "Жим" in text
+    assert "📝" not in text

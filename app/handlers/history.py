@@ -5,30 +5,48 @@ from aiogram import Router, F
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.queries import get_user_sessions, get_user_sessions_count, get_session_details
-from app.keyboards.workout_kb import history_list_kb, history_details_kb, exercise_progress_kb
+from app.db.models import WorkoutType
+from app.db.queries import (
+    get_session_details, get_user_sessions, get_user_sessions_count,
+    get_workout_types_with_sessions,
+)
+from app.keyboards.workout_kb import (
+    exercise_progress_kb, history_details_kb, history_filter_kb,
+    history_list_kb,
+)
 from app.render import render_history_details
-from app.services.chart_service import generate_progress_chart
+from app.services.chart_service import (
+    generate_progress_chart, generate_progress_chart_two,
+)
 from app.services.progress_service import (
-    collect_workout_stats, daily_max_durations, daily_max_weights, to_chart_points,
+    collect_workout_stats, daily_max_durations, daily_max_reps,
+    daily_max_weights, to_chart_points,
 )
 from app.services.training_service import calculate_personal_records, get_user
+from app.utils import fmt_msk_date
 
 router = Router()
 
 
 async def _render_history_page(
-    session: AsyncSession, user_id: int, page: int, message: Message, is_edit: bool = True
+    session: AsyncSession, user_id: int, page: int, message: Message,
+    is_edit: bool = True, wt_id: int = 0,
 ):
-    """Вспомогательная функция: собирает данные и отрисовывает страницу истории."""
+    """Вспомогательная функция: собирает данные и отрисовывает страницу истории.
+
+    wt_id — фильтр по типу тренировки (0 = все).
+    """
     limit = 5
     offset = page * limit
 
-    sessions = await get_user_sessions(session, user_id, offset, limit)
-    total_count = await get_user_sessions_count(session, user_id)
+    filter_id = wt_id or None
+    sessions = await get_user_sessions(session, user_id, offset, limit,
+                                       wt_id=filter_id)
+    total_count = await get_user_sessions_count(session, user_id,
+                                                wt_id=filter_id)
 
     if not sessions and page > 0:
-        return False # Если пусто, сообщаем вызвавшему, что страницы нет
+        return False  # Если пусто, сообщаем вызвавшему, что страницы нет
 
     has_next = (offset + limit) < total_count
 
@@ -37,12 +55,18 @@ async def _render_history_page(
         kb = history_list_kb([], 0, False)
     else:
         total_pages = (total_count - 1) // limit + 1
+        if wt_id:
+            wt = await session.get(WorkoutType, wt_id)
+            wt_name = wt.name if wt else ""
+            header = f"📊 <b>История: {wt_name}</b>"
+        else:
+            header = "📊 <b>История твоих тренировок</b>"
         text = (
-            f"📊 <b>История твоих тренировок</b>\n\n"
+            f"{header}\n\n"
             f"Страница {page + 1} из {total_pages}\n\n"
             f"👇 Выбери тренировку для просмотра деталей:"
         )
-        kb = history_list_kb(sessions, page, has_next)
+        kb = history_list_kb(sessions, page, has_next, wt_id=wt_id)
 
     if is_edit:
         try:
@@ -57,17 +81,56 @@ async def _render_history_page(
 
 @router.callback_query(F.data.startswith("hist_page:"))
 async def cb_history_page(callback: CallbackQuery, session: AsyncSession):
-    page = int(callback.data.split(":")[1])
+    # Форматы: "hist_page:{page}" (старые кнопки) и "hist_page:{page}:{wt_id}"
+    parts = callback.data.split(":")
+    page = int(parts[1])
+    wt_id = int(parts[2]) if len(parts) > 2 else 0
 
     user = await get_user(session, callback.from_user.id)
     if not user:
         return await callback.answer("Сначала /start", show_alert=True)
 
-    success = await _render_history_page(session, user.id, page, callback.message, is_edit=True)
+    success = await _render_history_page(session, user.id, page,
+                                         callback.message, is_edit=True,
+                                         wt_id=wt_id)
     if not success:
         await callback.answer("Это последняя страница", show_alert=True)
     else:
         await callback.answer()
+
+
+@router.callback_query(F.data == "hist_filter")
+async def cb_history_filter(callback: CallbackQuery, session: AsyncSession):
+    """Показывает список типов тренировок для фильтрации истории."""
+    user = await get_user(session, callback.from_user.id)
+    if not user:
+        return await callback.answer("Сначала /start", show_alert=True)
+
+    types_with_counts = await get_workout_types_with_sessions(session, user.id)
+    if not types_with_counts:
+        return await callback.answer("Пока нет завершённых тренировок",
+                                     show_alert=True)
+
+    await callback.message.edit_text(
+        "🔍 <b>Фильтр по типу тренировки</b>\n\n"
+        "Выбери тип — покажу только такие тренировки:",
+        reply_markup=history_filter_kb(types_with_counts))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("hist_setfilter:"))
+async def cb_history_set_filter(callback: CallbackQuery,
+                                session: AsyncSession):
+    """Применяет выбранный фильтр: первая страница с этим типом."""
+    wt_id = int(callback.data.split(":")[1])
+
+    user = await get_user(session, callback.from_user.id)
+    if not user:
+        return await callback.answer("Сначала /start", show_alert=True)
+
+    await _render_history_page(session, user.id, 0, callback.message,
+                               is_edit=True, wt_id=wt_id)
+    await callback.answer()
 
 
 @router.message(F.text == "📊 История")
@@ -86,6 +149,10 @@ async def cb_history_view(callback: CallbackQuery, session: AsyncSession):
     parts = callback.data.split(":")
     session_id = int(parts[1])
     page = int(parts[2])
+    wt_id = int(parts[3]) if len(parts) > 3 else 0  # старые кнопки — без wt
+    # «Адрес возврата»: если провалились сюда из архива заметок, кнопка
+    # «Назад» ведёт в заметки, а не в историю (например, «notes_ex:7:0»)
+    origin = ":".join(parts[4:]) if len(parts) > 4 else ""
 
     ws = await get_session_details(session, session_id)
     if not ws:
@@ -104,9 +171,14 @@ async def cb_history_view(callback: CallbackQuery, session: AsyncSession):
 
     for ex_id, ex_name in unique_exercises.items():
         kb.button(text=f"📈 {ex_name}",
-                  callback_data=f"ex_progress:{ex_id}:{session_id}:{page}")
+                  callback_data=f"ex_progress:{ex_id}:{session_id}:{page}"
+                               + (f":{origin}" if origin else ""))
 
-    kb.button(text="⬅️ Назад к истории", callback_data=f"hist_page:{page}")
+    if origin:
+        kb.button(text="⬅️ Назад к заметкам", callback_data=origin)
+    else:
+        kb.button(text="⬅️ Назад к истории",
+                  callback_data=f"hist_page:{page}:{wt_id}")
     kb.adjust(1)
 
     # УДАЛЯЕМ СТАРОЕ СООБЩЕНИЕ (с фото) И ОТПРАВЛЯЕМ НОВОЕ
@@ -141,12 +213,18 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
     import re
 
     from app.db.models import Exercise
-    from app.db.queries import get_exercise_history
+    from app.db.queries import (
+        get_exercise_history, get_exercise_notes, get_session_exercise_note,
+    )
 
     parts = callback.data.split(":")
     ex_id = int(parts[1])
     session_id = int(parts[2])
     page = int(parts[3])
+    # «Адрес возврата» пробрасываем через график обратно в детали тренировки
+    origin = ":".join(parts[4:]) if len(parts) > 4 else ""
+    back_cb = (f"hist_view:{session_id}:{page}:0:{origin}"
+               if origin else None)
 
     ex = await session.get(Exercise, ex_id)
     if not ex:
@@ -155,6 +233,22 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
     user = await get_user(session, callback.from_user.id)
     if not user:
         return await callback.answer("Пользователь не найден", show_alert=True)
+
+    # Заметка к упражнению: в первую очередь — из ТОЙ тренировки, откуда
+    # зашли (контекст), если там пусто — последняя известная (как раньше)
+    sess_note = await get_session_exercise_note(session, session_id, ex_id)
+    note_line = ""
+    if sess_note:
+        note_line = f"📝 <i>Заметка: {sess_note}</i>"
+    else:
+        note_rows = await get_exercise_notes(session, user.id, ex_id,
+                                             limit=1, offset=0)
+        if note_rows:
+            last_note, last_ws = note_rows[0]
+            note_date = (fmt_msk_date(last_ws.started_at)
+                         if last_ws.started_at else "")
+            note_line = (f"📝 <i>Последняя заметка: {last_note.note} "
+                         f"({note_date})</i>")
 
     # ИЩЕМ ИСТОРИЮ ПО ИМЕНИ И ТИПУ (см. PROJECT_STATE.md: осознанное решение)
     history_sets = await get_exercise_history(session, user.id, ex.name, ex.kind)
@@ -168,6 +262,8 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
         for wt_name, count in workout_stats.items()
     ]
     info_text = "🔄 <b>Выполнялось:</b>\n" + "\n".join(stats_lines)
+
+    two_panel_chart = None  # заполним для силовых с данными о повторах
 
     # --- ЛОГИКА ДЛЯ СИЛОВЫХ ---
     if ex.kind == "strength":
@@ -194,20 +290,33 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
             f"🏆 <b>Личные рекорды:</b>\n"
             f"⚖️ Максимальный вес: <b>{weight_display}</b>\n"
             f"💪 Лучший подход по тоннажу: <b>{best_set_text}</b>\n"
-            f"📊 Тоннаж: <b>{prs['max_volume']:g} {volume_unit}</b>\n\n"
-            f"📉 График: максимальный вес за каждый день."
+            f"📊 Тоннаж: <b>{prs['max_volume']:g} {volume_unit}</b>\n"
+            f"{note_line}\n\n"
+            f"📉 График: максимальный вес (сверху) и максимум повторов"
+            f" за подход (снизу) по каждому дню."
         )
 
         daily_max = daily_max_weights(history_sets)
 
         if not daily_max:
-            await callback.message.answer(text,
-                                          reply_markup=exercise_progress_kb(
-                                              session_id, page))
+            await callback.message.answer(
+                text, reply_markup=exercise_progress_kb(session_id, page, ex.id, back_cb=back_cb, show_notes_btn=not origin))
             await callback.answer()
             return
 
-        dates, values = to_chart_points(daily_max)
+        dates_w, values_w = to_chart_points(daily_max)
+
+        # Второй график: максимум повторов за подход в день.
+        # Если повторов нет (странные данные) — остаёмся на одном графике.
+        daily_reps = daily_max_reps(history_sets)
+        if daily_reps:
+            dates_r, values_r = to_chart_points(daily_reps)
+            two_panel_chart = (
+                (dates_w, values_w, "Максимальный вес", "Вес (кг)", "#00c9ff"),
+                (dates_r, values_r, "Максимум повторов за подход",
+                 "Повторы", "#ff9f43"),
+            )
+
         chart_title = f"Прогресс: {ex.name}"
         y_label = "Вес (кг)"
 
@@ -226,16 +335,16 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
             f"{info_text}\n\n"
             f"🏆 <b>Личные рекорды:</b>\n"
             f"⏱ Максимальное время за раз: <b>{_format_time(max_duration)}</b>\n"
-            f"⏳ Общее время за всё время: <b>{_format_time(total_duration)}</b>\n\n"
+            f"⏳ Общее время за всё время: <b>{_format_time(total_duration)}</b>\n"
+            f"{note_line}\n\n"
             f"📉 График: максимальное время за каждый день."
         )
 
         daily_max = daily_max_durations(history_sets)
 
         if not daily_max:
-            await callback.message.answer(text,
-                                          reply_markup=exercise_progress_kb(
-                                              session_id, page))
+            await callback.message.answer(
+                text, reply_markup=exercise_progress_kb(session_id, page, ex.id, back_cb=back_cb, show_notes_btn=not origin))
             await callback.answer()
             return
 
@@ -245,14 +354,18 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
         y_label = "Время (мин)"
 
     # --- ГЕНЕРАЦИЯ И ОТПРАВКА ГРАФИКА ---
-    chart_buf = await asyncio.to_thread(generate_progress_chart, dates, values,
-                                        chart_title, y_label)
+    if two_panel_chart:
+        chart_buf = await asyncio.to_thread(
+            generate_progress_chart_two, chart_title, *two_panel_chart)
+    else:
+        chart_buf = await asyncio.to_thread(generate_progress_chart, dates,
+                                            values, chart_title, y_label)
     photo = BufferedInputFile(chart_buf.read(),
                               filename=f"progress_{ex_id}.png")
 
     await callback.message.answer_photo(
         photo=photo,
         caption=text,
-        reply_markup=exercise_progress_kb(session_id, page)
+        reply_markup=exercise_progress_kb(session_id, page, ex.id, back_cb=back_cb, show_notes_btn=not origin)
     )
     await callback.answer()

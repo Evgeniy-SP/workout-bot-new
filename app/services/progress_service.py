@@ -67,6 +67,22 @@ def daily_max_durations(history_sets: list) -> dict:
     return dict(daily)
 
 
+def daily_max_reps(history_sets: list) -> dict:
+    """Максимум повторений в ОДНОМ подходе за каждый день (дни по МСК).
+
+    Возвращает {дата: повторы}. Показывает выносливость: вес может стоять
+    на месте, а количество повторов расти — это тоже прогресс.
+    """
+    daily: dict = defaultdict(int)
+    for s in history_sets:
+        if not (s.session and s.session.started_at and s.reps):
+            continue
+        day = to_msk(s.session.started_at).date()
+        if s.reps > daily[day]:
+            daily[day] = s.reps
+    return dict(daily)
+
+
 def to_chart_points(daily: dict) -> tuple[list[datetime], list[float]]:
     """Превращает {дата: значение} в отсортированные списки для графика."""
     sorted_days = sorted(daily.keys())

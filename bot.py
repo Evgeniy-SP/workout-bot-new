@@ -9,7 +9,7 @@ from aiogram.enums import ParseMode
 from app.config import settings
 from app.db.session import init_db
 from app.handlers import (
-    analytics, exercise_create, exercise_edit, history, start,
+    analytics, exercise_create, exercise_edit, history, notes, start,
     training_finish, training_menu, training_notes, training_sets, training_timers,
     workout_archive, workout_create, workout_crud, workout_view,
 )
@@ -34,6 +34,7 @@ async def main() -> None:
         workout_view.router,
         history.router,
         analytics.router,
+        notes.router,
         exercise_edit.router,
         training_menu.router,
         training_sets.router,
