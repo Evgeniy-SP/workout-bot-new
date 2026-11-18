@@ -437,3 +437,99 @@ async def get_sessions_in_range(session: AsyncSession, user_id: int,
         .order_by(WorkoutSession.started_at)
     )
     return list(result.scalars())
+
+
+# ─── PR и ачивки (C2.6) ───────────────────────────────────────────
+
+
+async def get_all_completed_sets(session: AsyncSession,
+                                 user_id: int) -> list[SessionSet]:
+    """Все завершённые подходы пользователя по хронологии.
+
+    Нужен для подсчёта суммарного числа PR и ачивок «+20% к весу»:
+    объёмы в личном боте — сотни подходов, считается мгновенно.
+    """
+    from sqlalchemy.orm import selectinload
+
+    result = await session.execute(
+        select(SessionSet)
+        .join(WorkoutSession, SessionSet.session_id == WorkoutSession.id)
+        .where(
+            WorkoutSession.user_id == user_id,
+            SessionSet.completed == True,
+        )
+        .options(
+            selectinload(SessionSet.session),
+            selectinload(SessionSet.exercise),
+        )
+        .order_by(WorkoutSession.started_at)
+    )
+    return list(result.scalars())
+
+
+async def count_finished_sessions(session: AsyncSession,
+                                  user_id: int) -> int:
+    """Сколько тренировок завершено (для ачивок-серий)."""
+    result = await session.scalar(
+        select(func.count(WorkoutSession.id)).where(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.finished_at.is_not(None),
+        )
+    )
+    return result or 0
+
+
+async def get_finished_session_dates(session: AsyncSession,
+                                     user_id: int) -> list:
+    """Даты завершённых тренировок (дней по МСК) — для серий без пропусков."""
+    result = await session.execute(
+        select(WorkoutSession.started_at).where(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.finished_at.is_not(None),
+        )
+    )
+    return [to_msk(sa).date() for sa in result.scalars() if sa]
+
+
+async def count_exercises_with_history(session: AsyncSession,
+                                       user_id: int) -> int:
+    """Сколько разных упражнений (по name+kind) пользователь выполнял."""
+    result = await session.scalar(
+        select(func.count())
+        .select_from(
+            select(Exercise.name, Exercise.kind)
+            .join(SessionSet, SessionSet.exercise_id == Exercise.id)
+            .join(WorkoutSession,
+                  WorkoutSession.id == SessionSet.session_id)
+            .where(
+                WorkoutSession.user_id == user_id,
+                SessionSet.completed == True,
+            )
+            .group_by(Exercise.name, Exercise.kind)
+            .subquery()
+        )
+    )
+    return result or 0
+
+
+async def get_user_achievement_codes(session: AsyncSession,
+                                     user_id: int) -> set[str]:
+    """Коды уже полученных ачивок — чтобы не выдавать дважды."""
+    from app.db.models import Achievement
+
+    result = await session.execute(
+        select(Achievement.code).where(Achievement.user_id == user_id)
+    )
+    return set(result.scalars())
+
+
+async def add_achievement(session: AsyncSession,
+                          user_id: int, code: str) -> None:
+    """Записывает полученную ачивку.
+
+    UNIQUE(user_id, code) страхует от дублей при повторных проверках.
+    """
+    from app.db.models import Achievement
+
+    session.add(Achievement(user_id=user_id, code=code))
+    await session.commit()

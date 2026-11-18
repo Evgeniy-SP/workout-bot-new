@@ -140,14 +140,19 @@ def confirm_hard_delete_kb(ex_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def choose_kind_kb(wt_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура выбора типа упражнения (силовое или кардио)."""
+def choose_kind_kb(wt_id: int, back_cb: str | None = None) -> InlineKeyboardMarkup:
+    """Клавиатура выбора типа упражнения (силовое или кардио).
+
+    back_cb — куда вести «⬅️ Назад». По умолчанию — список упражнений
+    шаблона; при создании из активной тренировки передаём tr_list,
+    чтобы вернуться в тренировку.
+    """
     kb = InlineKeyboardBuilder()
     kb.button(text="🏋️ Силовое (подходы, повторения, вес)",
               callback_data=f"ex_new_kind:strength:{wt_id}")
     kb.button(text="🏃 Кардио / разминка (длительность)",
               callback_data=f"ex_new_kind:cardio:{wt_id}")
-    kb.button(text="⬅️ Назад", callback_data=f"wt_ex:{wt_id}")
+    kb.button(text="⬅️ Назад", callback_data=back_cb or f"wt_ex:{wt_id}")
     kb.adjust(1)
     return kb.as_markup()
 

@@ -3,7 +3,8 @@ from datetime import datetime
 from enum import Enum
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func,
+    BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text,
+    UniqueConstraint, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -144,3 +145,25 @@ class SessionSkippedExercise(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     session_id: Mapped[int] = mapped_column(ForeignKey("workout_sessions.id", ondelete="CASCADE"), index=True)
     exercise_id: Mapped[int] = mapped_column(ForeignKey("exercises.id", ondelete="CASCADE"), index=True)
+
+
+class Achievement(Base):
+    """Полученные достижения пользователя (C2.6).
+
+    Коды: workouts_10/50/100/250, streak_7/30, exercises_10,
+    pr_first, pr_10, pr_50, pr_3_session, weight_plus_20.
+    Одна строка = одна ачивка (защита от дублей — UNIQUE).
+    """
+    __tablename__ = "achievements"
+    __table_args__ = (
+        UniqueConstraint("user_id", "code", name="uq_achievement_user_code"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    code: Mapped[str] = mapped_column(String(32))
+    unlocked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

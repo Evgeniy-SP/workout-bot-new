@@ -1,13 +1,16 @@
 """Хэндлеры для сохранения подходов (кнопки «Как планировал» и «Ввести фактически»)."""
+import asyncio
 from datetime import datetime, timezone
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message, InlineKeyboardButton
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, \
+    InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Exercise, SessionSet, WorkoutSession
-from app.db.queries import get_last_completed_set, get_sets_grouped
+from app.db.queries import get_exercise_history, get_last_completed_set, \
+    get_sets_grouped
 from app.keyboards.workout_kb import (
     cancel_kb,
     numeric_keypad_kb,
@@ -82,6 +85,10 @@ async def cb_save_planned(callback: CallbackQuery, session: AsyncSession,
     )
     session.add(new_set)
     await session.commit()
+
+    # C2.6: мгновенное уведомление о рекорде (для новых силовых подходов)
+    await _check_and_notify_pr(callback.message, session, session_id,
+                               ex_id, new_set)
 
     result_screen = await render_approach_screen(session, session_id, ex.id)
     if result_screen:
@@ -340,11 +347,17 @@ async def _save_custom_set(message: Message, state: FSMContext,
 
     await session.commit()
 
+    # C2.6: определяем рекорд СЕЙЧАС, но шлём ПОСЛЕ отрисовки экрана,
+    # чтобы сообщение о рекорде было последним в чате
+    pr_text = await _build_pr_notification(session, session_id, ex_id, new_set)
+
     all_sets = (await get_sets_grouped(session, session_id)).get(ex_id, [])
     done = sum(1 for s in all_sets if s.completed)
     plan = (ex.sets or 1) if ex.kind == "strength" else 1
 
     await state.clear()
+
+    ws = await session.get(WorkoutSession, session_id)
 
     if done >= plan:
         result_screen = await render_approach_screen(session, session_id,
@@ -354,20 +367,20 @@ async def _save_custom_set(message: Message, state: FSMContext,
             await message.answer(f"✅ {ex.name} готово\n\n" + text,
                                  reply_markup=kb)
         else:
-            ws = await session.get(WorkoutSession, session_id)
             text, kb = await render_list(session, session_id, ws.user_id)
             await message.answer(text, reply_markup=kb)
-        return
-
-    # ВАЖНО: Вместо ручного кода, вызываем нашу единую умную функцию!
-    result_screen = await render_approach_screen(session, session_id, ex_id)
-    if result_screen:
-        text, kb = result_screen
-        await message.answer(text, reply_markup=kb)
     else:
-        ws = await session.get(WorkoutSession, session_id)
-        text, kb = await render_list(session, session_id, ws.user_id)
-        await message.answer(text, reply_markup=kb)
+        # ВАЖНО: Вместо ручного кода, вызываем нашу единую умную функцию!
+        result_screen = await render_approach_screen(session, session_id, ex_id)
+        if result_screen:
+            text, kb = result_screen
+            await message.answer(text, reply_markup=kb)
+        else:
+            text, kb = await render_list(session, session_id, ws.user_id)
+            await message.answer(text, reply_markup=kb)
+
+    if pr_text:
+        await _send_pr_notification(message, pr_text)
 
 
 @router.callback_query(F.data.startswith("tr_edit_set:"))
@@ -674,6 +687,10 @@ async def cb_weight_input(callback: CallbackQuery, state: FSMContext, session: A
             session.add(new_set)
             await session.commit()
 
+            # C2.6: мгновенное уведомление о рекорде
+            await _check_and_notify_pr(callback.message, session, session_id,
+                                       ex_id, new_set)
+
         await state.clear()
 
         result = await render_approach_screen(session, session_id, ex_id)
@@ -791,6 +808,10 @@ async def cb_time_input(callback: CallbackQuery, state: FSMContext,
             session.add(new_set)
             await session.commit()
 
+            # C2.6: мгновенное уведомление о рекорде по времени (кардио)
+            await _check_and_notify_pr(callback.message, session, session_id,
+                                       ex_id, new_set)
+
         await state.clear()
 
         result = await render_approach_screen(session, session_id, ex_id)
@@ -815,3 +836,140 @@ async def cb_time_input(callback: CallbackQuery, state: FSMContext,
         reply_markup=weight_keypad_kb(prefix="t_num")
     )
     await callback.answer()
+
+
+# ─── C2.6: мгновенные уведомления о рекордах ──────────────────────
+
+
+async def _auto_delete_pr_message(msg, delay: int = 15):
+    """Удаляет сообщение о рекорде через delay секунд (как у таймеров)."""
+    await asyncio.sleep(delay)
+    try:
+        await msg.delete()
+    except Exception:
+        pass  # сообщение уже удалено пользователем или протухло
+
+
+@router.callback_query(F.data == "pr_dismiss")
+async def cb_pr_dismiss(callback: CallbackQuery):
+    """Кнопка «✅ Понятно» — удалить сообщение о рекорде сразу."""
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer()
+
+
+async def _build_pr_notification(session: AsyncSession,
+                                 session_id: int, ex_id: int,
+                                 new_set: SessionSet) -> str | None:
+    """Определяет, рекорд ли новый подход, и возвращает текст сообщения.
+
+    НЕ отправляет — отправка отдельным шагом (_send_pr_notification),
+    чтобы контролировать порядок сообщений в чате (экран первым,
+    рекорд — последним).
+
+    Работает для силовых (вес / повторы) и кардио (время).
+    """
+    from app.services.pr_service import (
+        build_pr_message, classify_duration_pr, raw_session_pr_events,
+        session_pr_events,
+    )
+
+    ex = await session.get(Exercise, ex_id)
+    ws = await session.get(WorkoutSession, session_id)
+    if not ex or not ws:
+        return None
+
+    all_groups = await get_sets_grouped(session, session_id)
+
+    # История того же упражнения (по name+kind) ИСКЛЮЧАЯ текущую сессию:
+    # рекорд — только относительно прошлых тренировок
+    history = await get_exercise_history(session, ws.user_id, ex.name, ex.kind)
+    prior = [s for s in history
+             if not s.session or s.session.id != session_id]
+
+    if ex.kind == "strength":
+        current = [s for s in all_groups.get(ex_id, [])
+                   if s.completed and s.weight_kg and s.reps]
+        # Сообщение шлём, только если подход — лучший в СВОЁМ упражнении
+        # (дедуп пирамиды: из 60/70/80 сообщения идут на каждом шаге,
+        # но в итогах тренировки останется только 80)
+        kind = next((k for s, k in session_pr_events(current, prior)
+                     if s.id == new_set.id), None)
+        ex_events = raw_session_pr_events(current, prior)
+    else:
+        # Кардио: один подход = одно упражнение; рекорд по времени
+        current = [s for s in all_groups.get(ex_id, [])
+                   if s.completed and s.duration_seconds]
+        kind = classify_duration_pr(new_set, prior)
+        if kind and any(s.id != new_set.id and
+                        s.duration_seconds >= new_set.duration_seconds
+                        for s in current):
+            kind = None  # в сессии уже был такой или лучший — сообщение уходило
+        ex_events = [(s, "duration") for s in current
+                     if classify_duration_pr(s, prior)]
+
+    if kind is None:
+        return None
+
+    # Сквозной номер рекорда по тренировке: собираем «сырые» PR всех
+    # упражнений сессии (силовые + кардио) и сортируем по времени
+    session_events = []
+    for eid, sets in all_groups.items():
+        e = await session.get(Exercise, eid)
+        if not e:
+            continue
+        hist = await get_exercise_history(session, ws.user_id,
+                                          e.name, e.kind)
+        pr = [s for s in hist
+              if not s.session or s.session.id != session_id]
+        if e.kind == "strength":
+            str_sets = [s for s in sets
+                        if s.completed and s.weight_kg and s.reps]
+            session_events.extend(raw_session_pr_events(str_sets, pr))
+        else:
+            for s in sets:
+                if s.completed and s.duration_seconds and \
+                        classify_duration_pr(s, pr):
+                    session_events.append((s, "duration"))
+
+    session_events.sort(
+        key=lambda x: (x[0].completed_at.timestamp()
+                       if x[0].completed_at else 0,
+                       x[0].id or 0))
+
+    ex_ordinal = next(
+        (i for i, (s, _) in enumerate(ex_events, start=1)
+         if s.id == new_set.id), None)
+    session_ordinal = next(
+        (i for i, (s, _) in enumerate(session_events, start=1)
+         if s.id == new_set.id), None)
+    if ex_ordinal is None or session_ordinal is None:
+        return None
+
+    return build_pr_message(ex.name, new_set, kind, prior,
+                            ex_ordinal, session_ordinal)
+
+
+async def _send_pr_notification(target, text: str):
+    """Шлёт сообщение о рекорде с кнопкой «✅ Понятно» и автоудалением."""
+    msg = await target.answer(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Понятно",
+                                 callback_data="pr_dismiss")
+        ]]),
+    )
+    asyncio.create_task(_auto_delete_pr_message(msg))
+
+
+async def _check_and_notify_pr(target, session: AsyncSession,
+                               session_id: int, ex_id: int,
+                               new_set: SessionSet):
+    """Определить рекорд и сразу отправить (для callback-сценариев,
+    где экран обновляется через edit_text — новое сообщение и так
+    окажется ниже)."""
+    text = await _build_pr_notification(session, session_id, ex_id, new_set)
+    if text:
+        await _send_pr_notification(target, text)

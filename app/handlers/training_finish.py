@@ -9,7 +9,7 @@ from sqlalchemy import func as sa_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Exercise, SessionSet, WorkoutSession
-from app.db.queries import get_sets_grouped
+from app.db.queries import get_exercise_history, get_sets_grouped
 from app.keyboards.workout_kb import (
     after_finish_kb, choose_kind_kb, confirm_training_delete_kb,
     finish_confirm_kb, training_remove_menu_kb,
@@ -77,7 +77,9 @@ async def cb_training_add_ex(callback: CallbackQuery, session: AsyncSession,
     await state.set_state(WorkoutCreate.adding_exercise_kind)
     await callback.message.edit_text(
         "Какой тип упражнения?",
-        reply_markup=choose_kind_kb(ws.workout_type_id)
+        # «Назад» вернёт в активную тренировку, а не в меню упражнений
+        reply_markup=choose_kind_kb(ws.workout_type_id,
+                                    back_cb=f"tr_list:{session_id}")
     )
     await callback.answer()
 
@@ -293,6 +295,28 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
     wt = await load_workout(session, ws.workout_type_id)
     sets_by_ex = await get_sets_grouped(session, session_id)
 
+    # === C2.6: сводка рекордов за тренировку (ОДИН блок на все упражнения) ===
+    from app.services.pr_service import build_pr_summary, session_pr_events
+
+    all_pr_events = []
+    exercise_names = {}
+    for ex_id, sets in sets_by_ex.items():
+        strength_done = [s for s in sets
+                         if s.completed and s.weight_kg and s.reps]
+        if not strength_done:
+            continue
+        ex = await session.get(Exercise, ex_id)
+        if not ex:
+            continue
+        exercise_names[ex_id] = ex.name
+        history = await get_exercise_history(session, ws.user_id,
+                                             ex.name, ex.kind)
+        prior = [s for s in history
+                 if not s.session or s.session.id != session_id]
+        all_pr_events.extend(session_pr_events(strength_done, prior))
+
+    pr_summary_block = build_pr_summary(all_pr_events, exercise_names)
+
     total_ex = 0
     done_ex = 0
     for ex in wt.exercises:
@@ -343,6 +367,11 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
         else:
             # Сюда попадут только обязательные, которые пропущены
             lines.append(f"⚪ {ex.name}")
+
+    # C2.6: блок рекордов (перед мотивационной фразой)
+    if pr_summary_block:
+        lines.append("")
+        lines.append(pr_summary_block)
 
     if ratio >= 1.0:
         phrases = [
