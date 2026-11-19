@@ -776,7 +776,11 @@ def notes_workouts_kb(sessions: list, page: int,
 
     for ws in sessions:
         wt_name = ws.workout_type.name if ws.workout_type else "Тренировка"
-        kb.button(text=f"📋 {wt_name} | {fmt_msk_date(ws.started_at)[:5]}",
+        # Превью заметки на кнопке: одинаковые «Тест | 11.11» различаются
+        # по первым словам заметки (сниппет + ужимание до лимита Telegram)
+        kb.button(text=_fit_label(f"📋 {wt_name} | "
+                                  f"{fmt_msk_date(ws.started_at)[:5]} — ",
+                                  _note_snippet(ws.notes or "")),
                   callback_data=f"notes_ws_view:{ws.id}:{page}")
     kb.adjust(1)
 
@@ -847,6 +851,7 @@ def analytics_kb(year: int, month: int,
 
     kb.button(text="📈 График по неделям",
               callback_data=f"an_chart:{year}:{month}")
+    kb.button(text="🏆 Ачивки", callback_data=f"an_ach:{year}:{month}")
 
     nav_row = []
     if prev_ym:
@@ -861,6 +866,22 @@ def analytics_kb(year: int, month: int,
             callback_data=f"an_month:{ny}:{nm}"))
     kb.row(*nav_row)
 
+    return kb.as_markup()
+
+
+def achievements_kb(back_ym: tuple[int, int] | None
+                    ) -> InlineKeyboardMarkup:
+    """Клавиатура экрана «🏆 Ачивки».
+
+    back_ym — (год, месяц) дашборда, откуда пришли: кнопка вернёт
+    в аналитику за тот же месяц. None — только обновление.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔄 Обновить", callback_data="an_ach_refresh")
+    if back_ym:
+        y, m = back_ym
+        kb.button(text="📅 К аналитике", callback_data=f"an_month:{y}:{m}")
+    kb.adjust(1)
     return kb.as_markup()
 
 

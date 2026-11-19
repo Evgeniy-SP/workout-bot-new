@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.services.analytics_service import (
-    average_rest, calculate_tonnage, month_activity, month_top_stats,
-    weekly_activity,
+    average_rest, average_rest_between_exercises, calculate_tonnage,
+    month_activity, month_top_stats, weekly_activity,
 )
 
 UTC = timezone.utc
@@ -154,6 +154,53 @@ def test_average_rest_separates_exercises():
 
 def test_average_rest_no_data():
     assert average_rest([]) is None
+
+
+# ─── average_rest_between_exercises ──────────────────────────────
+def test_rest_between_exercises_median():
+    # Присед: 2 подхода, жим: 1 подход → один переход, интервал 5 мин
+    sets = [
+        make_set(session_id=1, ex_id=1, completed_at=_t(10, 10, 0)),
+        make_set(session_id=1, ex_id=1, completed_at=_t(10, 10, 12)),
+        make_set(session_id=1, ex_id=2, completed_at=_t(10, 10, 17)),
+    ]
+    assert average_rest_between_exercises(sets) == 300.0
+
+
+def test_rest_between_exercises_ignores_same_exercise_intervals():
+    # Интервалы внутри одного упражнения не считаются «между упражнениями»
+    sets = [
+        make_set(session_id=1, ex_id=1, completed_at=_t(10, 10, 0)),
+        make_set(session_id=1, ex_id=1, completed_at=_t(10, 12, 0)),
+    ]
+    assert average_rest_between_exercises(sets) is None
+
+
+def test_rest_between_exercises_ignores_long_transition():
+    # Переход 30 мин — уже перерыв, а не отдых между упражнениями
+    sets = [
+        make_set(session_id=1, ex_id=1, completed_at=_t(10, 10, 0)),
+        make_set(session_id=1, ex_id=2, completed_at=_t(10, 10, 40)),
+    ]
+    assert average_rest_between_exercises(sets) is None
+
+
+def test_rest_between_exercises_separates_sessions():
+    # Переход между тренировками не считается
+    sets = [
+        make_set(session_id=1, ex_id=1, completed_at=_t(10, 10, 0)),
+        make_set(session_id=2, ex_id=2, completed_at=_t(10, 15, 0)),
+    ]
+    assert average_rest_between_exercises(sets) is None
+
+
+def test_rest_between_exercises_skips_uncompleted():
+    sets = [
+        make_set(session_id=1, ex_id=1, completed_at=_t(10, 10, 0)),
+        make_set(session_id=1, ex_id=2, completed=False,
+                 completed_at=_t(10, 15, 0)),
+    ]
+    assert average_rest_between_exercises(sets) is None
 
 
 # ─── weekly_activity ─────────────────────────────────────────────

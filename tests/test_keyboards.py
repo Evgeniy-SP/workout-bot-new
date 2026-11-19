@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from app.keyboards.workout_kb import (
     history_filter_kb, history_list_kb, notes_exercise_kb,
-    notes_search_results_kb,
+    notes_search_results_kb, notes_workouts_kb,
 )
 
 
@@ -66,6 +66,34 @@ def test_notes_exercise_kb_items_open_workout():
     assert "Проверка заметок" in rows[0][0].text
     assert rows[1][0].callback_data == "notes_ex:7:0"  # пагинация
     assert rows[2][0].callback_data == "notes_main:0"  # в общий архив
+
+
+def test_notes_workouts_kb_shows_note_preview():
+    """Кнопка тренировки в «Заметках к тренировкам» несёт сниппет заметки,
+    чтобы одинаковые «Тест | 11.11» различались по первым словам."""
+    from datetime import datetime, timezone
+    wt = SimpleNamespace(name="Тест")
+    ws = SimpleNamespace(id=5, workout_type=wt,
+                         started_at=datetime(2026, 11, 11, 12, tzinfo=timezone.utc),
+                         notes="Плечи болели, снизил вес")
+    markup = notes_workouts_kb([ws], 0, False)
+    rows = markup.inline_keyboard
+    assert rows[0][0].callback_data == "notes_ws_view:5:0"
+    assert "Тест | 11.11" in rows[0][0].text
+    assert "Плечи болели" in rows[0][0].text
+
+
+def test_notes_workouts_kb_truncates_long_note():
+    """Длинная заметка ужимается: подпись кнопки не превышает лимит Telegram."""
+    from datetime import datetime, timezone
+    wt = SimpleNamespace(name="Тест")
+    ws = SimpleNamespace(id=5, workout_type=wt,
+                         started_at=datetime(2026, 11, 11, 12, tzinfo=timezone.utc),
+                         notes="Очень длинная заметка " * 10)
+    markup = notes_workouts_kb([ws], 0, False)
+    label = markup.inline_keyboard[0][0].text
+    assert len(label) <= 64
+    assert label.endswith("…")
 
 
 def test_notes_exercise_kb_origin_back_to_workout():

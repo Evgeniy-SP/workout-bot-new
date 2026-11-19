@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 from app.db.models import Exercise, SessionExerciseNote, SessionSet, User, \
     WorkoutSession, WorkoutType
 from app.db.queries import (
+    get_exercise_history,
     get_last_completed_set,
     get_last_note_for_exercise,
     get_last_workout_note,
@@ -236,6 +237,22 @@ async def render_approach_screen(
             from app.utils import to_msk
             last_date = to_msk(last_ws.started_at).strftime("%d.%m.%y")
 
+    # === C2.6 Блок 3: строка «🏆 Рекорд» по ВСЕЙ истории упражнения ===
+    # (по name+kind, как история прогресса; текущая сессия включена —
+    # если подход только что побил рекорд, строка покажет новый максимум)
+    from app.services.progress_service import parse_weight
+    from app.utils import format_weight, to_msk
+
+    record_str = None
+    history_sets = await get_exercise_history(session, ws.user_id,
+                                              ex.name, ex.kind)
+    weighted = [s for s in history_sets
+                if parse_weight(getattr(s, "weight_kg", None)) is not None]
+    if weighted:
+        best = max(weighted, key=lambda s: parse_weight(s.weight_kg))
+        rec_date = to_msk(best.session.started_at).strftime("%d.%m.%y")
+        record_str = f"{format_weight(best.weight_kg)} от {rec_date}"
+
     # === ГЛАВНОЕ ИЗМЕНЕНИЕ: ЕСЛИ is_skipped, ПРИНУДИТЕЛЬНО ПОКАЗЫВАЕМ ИТОГИ ===
     if is_skipped or (plan > 0 and len(completed) >= plan):
         text = render_strength_summary(
@@ -268,7 +285,7 @@ async def render_approach_screen(
             last_reps=last_reps, last_weight=last_weight, last_note=last_note,
             rest_time_str=rest_time_str, timer_str=timer_str,
             current_note=note_obj.note if note_obj else None,
-            last_date=last_date
+            last_date=last_date, record_str=record_str
         )
 
         kb = approach_kb(

@@ -5,10 +5,12 @@
 
 Категории ачивок:
 - workouts_10/50/100/250 — суммарное число завершённых тренировок;
-- streak_7/30 — серия дней с тренировками (день по МСК, тренировка =
-  любая завершённая сессия). Серия «актуальна» до конка завтрашнего
-  дня: вечерняя тренировка не обнуляет стрик мгновенно после полуночи;
-- exercises_10 — сколько разных упражнений (по name+kind) было выполнено;
+- monthly_12/20 — регулярность: максимум завершённых тренировок за
+  ОДИН календарный месяц (по МСК) — 12 и 20 соответственно. Честнее
+  серии-дней для сплита «через день»: пропуск между тренировками
+  не рвёт прогресс, важен итог месяца;
+- exercises_10/25/50 — сколько разных упражнений (по name+kind)
+  было выполнено;
 - pr_first/pr_10/pr_50 — суммарное число PR за всю историю
   (силовые: вес/повторы, кардио: время — те же правила, что в pr_service);
 - pr_3_session — 3 и более рекорда за одну тренировку;
@@ -17,7 +19,9 @@
   упражнения (считая от первого подхода), по каждой единице измерения
   отдельно («12 блоков» сравнивается только с блоками — та же схема,
   что в pr_service). Планка фиксированная: ачивка показывает рост
-  от старта и не «откатывается» при новых рекордах.
+  от старта и не «откатывается» при новых рекордах. Ачивка
+  одноразовая, но на экране показываем ВСЕ упражнения, выполнившие
+  условие (а не только первое).
 """
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -25,11 +29,12 @@ from datetime import datetime, timedelta, timezone
 from app.services.pr_service import (
     _unit_key, classify_duration_pr, classify_pr, split_weight,
 )
-from app.utils import MSK, to_msk
+from app.utils import to_msk
 
 # Пороги серийных ачивок
 WORKOUT_MILESTONES = [10, 50, 100, 250]
-STREAK_MILESTONES = [7, 30]
+# (порог «максимум тренировок за один календарный месяц», код ачивки)
+MONTHLY_MILESTONES = [(12, "monthly_12"), (20, "monthly_20")]
 # (порог суммарного числа PR, код ачивки) — у первой ачивки код не числовой
 PR_MILESTONES = [(1, "pr_first"), (10, "pr_10"), (50, "pr_50")]
 # Градации «Разнообразия» — по числу уникальных упражнений (name+kind)
@@ -52,12 +57,12 @@ ACHIEVEMENTS: dict[str, dict] = {
     "workouts_250": {
         "icon": "🏅", "title": "Марафонец",
         "desc": "250 завершённых тренировок"},
-    "streak_7": {
-        "icon": "📅", "title": "Неделя без пропусков",
-        "desc": "7 дней подряд с тренировками"},
-    "streak_30": {
-        "icon": "🗓", "title": "Месяц железной дисциплины",
-        "desc": "30 дней подряд с тренировками"},
+    "monthly_12": {
+        "icon": "🗓", "title": "Месяц в ритме",
+        "desc": "12 тренировок за один календарный месяц"},
+    "monthly_20": {
+        "icon": "⚙️", "title": "Железный конвейер",
+        "desc": "20 тренировок за один календарный месяц"},
     "exercises_10": {
         "icon": "🧩", "title": "Экспериментатор",
         "desc": "10 разных упражнений в истории"},
@@ -87,7 +92,7 @@ ACHIEVEMENTS: dict[str, dict] = {
 # Порядок вывода на экране «🏆 Ачивки» и в уведомлении
 ACHIEVEMENT_ORDER = [
     "workouts_10", "workouts_50", "workouts_100", "workouts_250",
-    "streak_7", "streak_30",
+    "monthly_12", "monthly_20",
     "pr_first", "pr_10", "pr_50", "pr_3_session", "weight_plus_20",
     "exercises_10", "exercises_25", "exercises_50",
 ]
@@ -113,29 +118,20 @@ def _exercise_key(s) -> tuple:
     return (getattr(ex, "name", "?"), getattr(ex, "kind", "strength"))
 
 
-# ─── Серия дней (streak) ──────────────────────────────────────────
+# ─── Регулярность по месяцам ──────────────────────────────────────
 
 
-def compute_streak(dates: set, today) -> int:
-    """Текущая серия дней с тренировками.
+def best_monthly_count(dates: set) -> int:
+    """Максимум завершённых тренировок за один календарный месяц.
 
-    dates — множество дат (date) завершённых тренировок по МСК,
-    today — сегодняшняя дата по МСК.
-
-    Серия «жива», если последняя тренировка была сегодня или вчера
-    (иначе пропуск уже состоялся — серия потухла, возвращаем 0).
-    Дальше считаем назад, пока каждый предыдущий день есть в dates.
+    dates — множество дат (date) завершённых тренировок по МСК.
+    Для ачивок регулярности важен лучший месяц за всю историю:
+    закрытый месяц остаётся «в активе» навсегда.
     """
-    if not dates:
-        return 0
-    last = max(dates)
-    if (today - last).days > 1:
-        return 0
-    streak, day = 0, last
-    while day in dates:
-        streak += 1
-        day -= timedelta(days=1)
-    return streak
+    by_month: dict = defaultdict(int)
+    for d in dates:
+        by_month[(d.year, d.month)] += 1
+    return max(by_month.values()) if by_month else 0
 
 
 # ─── Подсчёт PR за всю историю ────────────────────────────────────
@@ -210,7 +206,7 @@ def weight_gain_achievements(all_sets: list) -> dict:
 # ─── Сводная проверка новых ачивок ────────────────────────────────
 
 
-def check_new_achievements(*, codes: set, today, session_dates,
+def check_new_achievements(*, codes: set, session_dates,
                            workouts_count: int, exercises_count: int,
                            pr_total: int, pr_in_session: int,
                            weight_gain_names: list) -> list[tuple]:
@@ -225,10 +221,9 @@ def check_new_achievements(*, codes: set, today, session_dates,
         if workouts_count >= n and code not in codes:
             new.append((code, ""))
 
-    streak = compute_streak(set(session_dates), today)
-    for n in STREAK_MILESTONES:
-        code = f"streak_{n}"
-        if streak >= n and code not in codes:
+    best_month = best_monthly_count(set(session_dates))
+    for threshold, code in MONTHLY_MILESTONES:
+        if best_month >= threshold and code not in codes:
             new.append((code, ""))
 
     for n in EXERCISES_MILESTONES:
@@ -276,7 +271,6 @@ async def unlock_achievements(db_session, user_id: int,
 
     new = check_new_achievements(
         codes=codes,
-        today=datetime.now(MSK).date(),
         session_dates=await get_finished_session_dates(db_session, user_id),
         workouts_count=await count_finished_sessions(db_session, user_id),
         exercises_count=await count_exercises_with_history(db_session,
@@ -291,6 +285,14 @@ async def unlock_achievements(db_session, user_id: int,
 
 
 # ─── Тексты ───────────────────────────────────────────────────────
+
+
+def _join_names(names: list) -> str:
+    """«Приседания, Жим, Тяга…» — не более трёх названий в строке."""
+    if not names:
+        return ""
+    shown = ", ".join(names[:3])
+    return shown + ("…" if len(names) > 3 else "")
 
 
 def build_achievements_message(new: list[tuple]) -> str:
@@ -313,7 +315,7 @@ def render_achievements_screen(*, codes: set, session_dates: list,
                                pr_total: int, weight_gain_names: list,
                                today) -> str:
     """Экран «🏆 Ачивки»: разблокированные ✅ и замки 🔒 с прогрессом."""
-    streak = compute_streak(set(session_dates), today)
+    best_month = best_monthly_count(set(session_dates))
     known = set(ACHIEVEMENT_ORDER)
     unlocked = len(set(codes) & known)
 
@@ -338,16 +340,15 @@ def render_achievements_screen(*, codes: set, session_dates: list,
         line("workouts_50", workouts_count, 50),
         line("workouts_100", workouts_count, 100),
         line("workouts_250", workouts_count, 250),
-        line("streak_7", streak, 7, " дн."),
-        line("streak_30", streak, 30, " дн."),
+        line("monthly_12", best_month if best_month else None, 12),
+        line("monthly_20", best_month if best_month else None, 20),
         "",
         "🏋️ <b>Рекорды</b>",
         line("pr_first", pr_total if pr_total else None, 1),
         line("pr_10", pr_total if pr_total else None, 10),
         line("pr_50", pr_total if pr_total else None, 50),
         line("pr_3_session"),
-        line("weight_plus_20",
-             detail=weight_gain_names[0] if weight_gain_names else ""),
+        line("weight_plus_20", detail=_join_names(weight_gain_names)),
         "",
         "🧩 <b>Разнообразие</b>",
     ]

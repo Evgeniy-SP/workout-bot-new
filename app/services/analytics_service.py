@@ -128,6 +128,37 @@ def average_rest(sets: list) -> float | None:
     return median(intervals) if intervals else None
 
 
+# Переход между упражнениями длиннее 20 минут считаем уже не «отдыхом»,
+# а перерывом — в статистику не берём
+MAX_EXERCISE_GAP_SEC = 1200
+
+
+def average_rest_between_exercises(sets: list) -> float | None:
+    """Медианный отдых между упражнениями внутри тренировки (секунды).
+
+    Берём все завершённые подходы сессии по хронологии; интервал считается
+    между последним подходом упражнения N и первым подходом следующего
+    упражнения M (exercise_id меняется). Интервалы > 20 минут и <= 0
+    отбрасываем. None, если данных нет.
+    """
+    by_session: dict[int, list] = defaultdict(list)
+    for s in sets:
+        if s.completed and s.completed_at:
+            by_session[s.session_id].append(s)
+
+    intervals = []
+    for sess_sets in by_session.values():
+        sess_sets.sort(key=lambda s: s.completed_at)
+        for prev, cur in zip(sess_sets, sess_sets[1:]):
+            if prev.exercise_id == cur.exercise_id:
+                continue  # это внутриупражнениевый интервал, не наш случай
+            delta = (cur.completed_at - prev.completed_at).total_seconds()
+            if 0 < delta <= MAX_EXERCISE_GAP_SEC:
+                intervals.append(delta)
+
+    return median(intervals) if intervals else None
+
+
 def weekly_activity(sessions: list) -> tuple[list[int], list[int]]:
     """Число тренировок и уникальных выполненных упражнений по неделям месяца.
 

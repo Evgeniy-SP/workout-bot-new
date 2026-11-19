@@ -34,37 +34,27 @@ def _c(duration, sess, set_number=1, set_id=None, name="Бег"):
                       exercise=ex)
 
 
-# ─── compute_streak ───────────────────────────────────────────────
+# ─── best_monthly_count ───────────────────────────────────────────
 
-def test_streak_empty_history():
-    assert ach.compute_streak(set(), date(2026, 11, 19)) == 0
-
-
-def test_streak_counts_back_from_today():
-    days = {date(2026, 11, 15) + timedelta(days=i) for i in range(5)}
-    assert ach.compute_streak(days, date(2026, 11, 19)) == 5
+def test_monthly_empty_history():
+    assert ach.best_monthly_count(set()) == 0
 
 
-def test_streak_survives_until_end_of_tomorrow():
-    """Тренировка вчера — серия ещё жива (весь сегодняшний день)."""
-    days = {date(2026, 11, 14) + timedelta(days=i) for i in range(5)}
-    assert ach.compute_streak(days, date(2026, 11, 19)) == 5
+def test_monthly_counts_best_month():
+    """12 тренировок в октябре, 3 в ноябре — лучший месяц = 12."""
+    oct_days = {date(2026, 10, 1) + timedelta(days=i) for i in range(12)}
+    nov_days = {date(2026, 11, 3), date(2026, 11, 8), date(2026, 11, 15)}
+    assert ach.best_monthly_count(oct_days | nov_days) == 12
 
 
-def test_streak_dead_after_full_gap_day():
-    days = {date(2026, 11, 14) + timedelta(days=i) for i in range(5)}
-    assert ach.compute_streak(days, date(2026, 11, 20)) == 0
+def test_monthly_splits_by_calendar_month():
+    """Тренировки в разных месяцах не суммируются."""
+    days = {date(2026, 10, 31), date(2026, 11, 1), date(2026, 11, 2)}
+    assert ach.best_monthly_count(days) == 2
 
 
-def test_streak_counts_only_tail():
-    """Пропуск внутри истории: считается только «хвост» от последнего дня."""
-    days = {date(2026, 11, 1), date(2026, 11, 2),
-            date(2026, 11, 17), date(2026, 11, 18)}
-    assert ach.compute_streak(days, date(2026, 11, 18)) == 2
-
-
-def test_streak_single_session_today():
-    assert ach.compute_streak({date(2026, 11, 19)}, date(2026, 11, 19)) == 1
+def test_monthly_single_session():
+    assert ach.best_monthly_count({date(2026, 11, 19)}) == 1
 
 
 # ─── count_pr_events ──────────────────────────────────────────────
@@ -190,7 +180,7 @@ def test_weight_gain_multiple_exercises():
 
 def _base_kwargs(**over):
     kw = dict(
-        codes=set(), today=date(2026, 11, 19),
+        codes=set(),
         session_dates=[date(2026, 11, 19)], workouts_count=1,
         exercises_count=1, pr_total=0, pr_in_session=0,
         weight_gain_names=[],
@@ -211,11 +201,19 @@ def test_check_not_returned_twice():
     assert "workouts_10" not in codes
 
 
-def test_check_streak():
-    week = [date(2026, 11, 13) + timedelta(days=i) for i in range(7)]
+def test_check_monthly():
+    """12 тренировок за один месяц -> monthly_12, но не monthly_20."""
+    month = [date(2026, 11, 1) + timedelta(days=2 * i) for i in range(12)]
     codes = [c for c, _ in ach.check_new_achievements(
-        **_base_kwargs(session_dates=week))]
-    assert "streak_7" in codes and "streak_30" not in codes
+        **_base_kwargs(session_dates=month))]
+    assert "monthly_12" in codes and "monthly_20" not in codes
+
+
+def test_check_monthly_both_tiers():
+    month = [date(2026, 11, 1) + timedelta(days=i) for i in range(20)]
+    codes = [c for c, _ in ach.check_new_achievements(
+        **_base_kwargs(session_dates=month))]
+    assert codes == ["monthly_12", "monthly_20"]
 
 
 def test_check_pr_milestones_and_session():
@@ -270,18 +268,29 @@ def test_achievements_message_contains_titles():
 
 
 def test_screen_shows_progress_and_unlocked():
-    week = [date(2026, 11, 13) + timedelta(days=i) for i in range(7)]
+    month = [date(2026, 11, 1) + timedelta(days=2 * i) for i in range(12)]
     text = ach.render_achievements_screen(
-        codes={"workouts_10", "streak_7"},
-        session_dates=week, workouts_count=14,
+        codes={"workouts_10", "monthly_12"},
+        session_dates=month, workouts_count=14,
         exercises_count=4, pr_total=0, weight_gain_names=[],
         today=date(2026, 11, 19))
     assert "2 из 14" in text
     assert "✅ 🎖 Первая десятка · 14" in text
-    assert "✅ 📅 Неделя без пропусков · 7 дн." in text
+    assert "✅ 🗓 Месяц в ритме · 12" in text
+    assert "🔒 ⚙️ Железный конвейер — 12/20" in text
     assert "🔒 🥇 Полсотни тренировок — 14/50" in text
     assert "🔒 🔥 Первый рекорд" in text
     assert "🔒 🧩 Экспериментатор — 4/10 упр." in text
+
+
+def test_screen_weight_gain_lists_all_exercises():
+    """Разблокированная «Вес +20%» показывает до трёх упражнений."""
+    text = ach.render_achievements_screen(
+        codes={"weight_plus_20"}, session_dates=[], workouts_count=0,
+        exercises_count=0, pr_total=0,
+        weight_gain_names=["Приседания", "Жим", "Тяга", "Становая"],
+        today=date(2026, 11, 19))
+    assert "✅ 📈 Вес +20% · Приседания, Жим, Тяга…" in text
 
 
 def test_screen_weight_gain_unlocked_with_name():

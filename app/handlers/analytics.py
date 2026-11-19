@@ -17,8 +17,8 @@ from app.keyboards.workout_kb import (
 )
 from app.services import achievement_service as ach
 from app.services.analytics_service import (
-    average_rest, calculate_tonnage, month_activity, month_top_stats,
-    weekly_activity,
+    average_rest, average_rest_between_exercises, calculate_tonnage,
+    month_activity, month_top_stats, weekly_activity,
 )
 from app.services.chart_service import generate_grouped_bar_chart
 from app.services.training_service import get_user
@@ -108,6 +108,7 @@ async def _render_dashboard(session: AsyncSession, user_id: int,
     total_sets, total_exercises = month_activity(all_sets)
     favorites = month_top_stats(all_sets)
     rest = average_rest(all_sets)
+    rest_ex = average_rest_between_exercises(all_sets)
 
     total_seconds = sum(
         int((ses.finished_at - ses.started_at).total_seconds())
@@ -131,10 +132,16 @@ async def _render_dashboard(session: AsyncSession, user_id: int,
             result = f" · макс: {best}" if best else ""
             lines.append(f"{medal} {name} — {n} {_set_word(n)}{result}")
 
+    rest_lines = []
     if rest is not None:
+        rest_lines.append(f"😴 Средний отдых между подходами: "
+                          f"<b>{_format_rest(rest)}</b>")
+    if rest_ex is not None:
+        rest_lines.append(f"🚶 Средний отдых между упражнениями: "
+                          f"<b>{_format_rest(rest_ex)}</b>")
+    if rest_lines:
         lines.append("")
-        lines.append(f"😴 Средний отдых между подходами: "
-                     f"<b>{_format_rest(rest)}</b>")
+        lines.extend(rest_lines)
 
     lines.append("")
     lines.append("👇 Листай месяцы или смотри график:")

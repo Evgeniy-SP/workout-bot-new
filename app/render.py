@@ -136,7 +136,8 @@ def render_approach(ex: Exercise, set_num: int, planned_reps: int | None,
                     timer_str: str | None = None,
                     current_note: str | None = None,
                     last_date: str | None = None,
-                    is_skipped: bool = False) -> str: # <--- ДОБАВИЛИ ПАРАМЕТР
+                    is_skipped: bool = False, # <--- ДОБАВИЛИ ПАРАМЕТР
+                    record_str: str | None = None) -> str: # C2.6 Блок 3
     from app.utils import format_duration
 
     # Статус завершения
@@ -155,11 +156,13 @@ def render_approach(ex: Exercise, set_num: int, planned_reps: int | None,
             history_text = f"📋 <b>План: {display_reps} × {display_weight}</b>"
 
         done_sets = set_num - 1
+        record_line = f"\n🏆 Рекорд: <b>{record_str}</b>" if record_str else ""
         blockquote = (
             f"<blockquote>"
             f"📈 Выполнено: <b>{done_sets}</b> из <b>{ex.sets}</b>{skipped_status}\n" # <--- ВСТАВИЛИ СТАТУС
             f"📍 Текущий: <b>Подход {set_num}</b>\n"
             f"{history_text}"
+            f"{record_line}"
             f"</blockquote>"
         )
 
