@@ -1,10 +1,12 @@
 """Хэндлеры для завершения тренировки и управления упражнениями на ходу."""
+import asyncio
 import random
 from datetime import datetime, timezone
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardButton, \
+    InlineKeyboardMarkup
 from sqlalchemy import func as sa_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +16,7 @@ from app.keyboards.workout_kb import (
     after_finish_kb, choose_kind_kb, confirm_training_delete_kb,
     finish_confirm_kb, training_remove_menu_kb,
 )
+from app.services import achievement_service as ach
 from app.services.training_service import (
     load_workout, render_approach_screen, render_list,
 )
@@ -317,6 +320,10 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
 
     pr_summary_block = build_pr_summary(all_pr_events, exercise_names)
 
+    # === C2.6 Блок 3: проверка достижений (после фиксации finished_at) ===
+    new_achievements = await ach.unlock_achievements(
+        session, ws.user_id, pr_in_session=len(all_pr_events))
+
     total_ex = 0
     done_ex = 0
     for ex in wt.exercises:
@@ -408,6 +415,12 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
     await callback.message.edit_text("\n".join(lines),
                                      reply_markup=after_finish_kb())
     await callback.answer("Тренировка завершена")
+
+    # Мгновенное сообщение о разблокированных ачивках — ПОСЛЕ экрана
+    # итогов, с автоудалением через 15 сек (как у PR-уведомлений)
+    if new_achievements:
+        await _send_achievements_notification(callback.message,
+                                              new_achievements)
 
 
 @router.callback_query(F.data.startswith("tr_finish_ex:"))
@@ -511,3 +524,29 @@ async def cb_make_plan(callback: CallbackQuery, session: AsyncSession):
 
         await callback.message.edit_text(update_text + text, reply_markup=kb)
     await callback.answer("План обновлен")
+
+
+# ─── C2.6 Блок 3: достижения ──────────────────────────────────────
+
+
+async def _auto_delete_message(msg, delay: int = 15):
+    """Удаляет сообщение через delay секунд (как у PR-уведомлений)."""
+    await asyncio.sleep(delay)
+    try:
+        await msg.delete()
+    except Exception:
+        pass  # сообщение уже удалено пользователем или протухло
+
+
+async def _send_achievements_notification(target,
+                                          new: list[tuple]):
+    """Шлёт сообщение о новых ачивках: кнопка «✅ Понятно» (тот же
+    callback pr_dismiss, что и у рекордов) + автоудаление 15 сек."""
+    msg = await target.answer(
+        ach.build_achievements_message(new),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Понятно",
+                                 callback_data="pr_dismiss")
+        ]]),
+    )
+    asyncio.create_task(_auto_delete_message(msg))

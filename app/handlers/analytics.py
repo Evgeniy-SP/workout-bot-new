@@ -6,8 +6,16 @@ from aiogram import Router, F
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.queries import get_months_with_sessions, get_sessions_in_range
-from app.keyboards.workout_kb import MONTH_NAMES, analytics_kb
+from app.db.queries import (
+    count_exercises_with_history, count_finished_sessions,
+    get_all_completed_sets, get_finished_session_dates,
+    get_months_with_sessions, get_sessions_in_range,
+    get_user_achievement_codes,
+)
+from app.keyboards.workout_kb import (
+    MONTH_NAMES, achievements_kb, analytics_kb,
+)
+from app.services import achievement_service as ach
 from app.services.analytics_service import (
     average_rest, calculate_tonnage, month_activity, month_top_stats,
     weekly_activity,
@@ -191,4 +199,50 @@ async def cb_analytics_chart(callback: CallbackQuery, session: AsyncSession):
                               filename=f"analytics_{year}_{month}.png")
 
     await callback.message.answer_photo(photo=photo)
+    await callback.answer()
+
+
+# ─── C2.6 Блок 3: экран «🏆 Ачивки» ───────────────────────────────
+
+
+@router.callback_query(F.data.startswith("an_ach"))
+async def cb_achievements(callback: CallbackQuery, session: AsyncSession):
+    """Экран достижений. an_ach:{year}:{month} — с кнопкой «К аналитике»
+    за текущий месяц; an_ach_refresh — просто обновить.
+
+    При открытии молча выдаёт ачивки за прошлые заслуги (история
+    появилась раньше этой фичи) — иначе завоёванное «до» висело
+    бы замком до следующей тренировки.
+    """
+    parts = callback.data.split(":")
+    back_ym = (int(parts[1]), int(parts[2])) if len(parts) >= 3 else None
+
+    user = await get_user(session, callback.from_user.id)
+    if not user:
+        return await callback.answer("Сначала /start", show_alert=True)
+
+    added = await ach.unlock_achievements(session, user.id)
+
+    codes = await get_user_achievement_codes(session, user.id)
+    session_dates = await get_finished_session_dates(session, user.id)
+    all_sets = await get_all_completed_sets(session, user.id)
+
+    text = ach.render_achievements_screen(
+        codes=codes,
+        session_dates=session_dates,
+        workouts_count=await count_finished_sessions(session, user.id),
+        exercises_count=await count_exercises_with_history(session, user.id),
+        pr_total=ach.count_pr_events(all_sets),
+        weight_gain_names=list(
+            ach.weight_gain_achievements(all_sets).values()),
+        today=datetime.now(MSK).date(),
+    )
+    if added:
+        text += (f"\n\n🎁 <i>Зачтено за прошлые заслуги: "
+                 f"{len(added)} шт. — поздравляю!</i>")
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=achievements_kb(back_ym))
+    except Exception:
+        pass  # текст не изменился (повторное «🔄 Обновить») — не падаем
     await callback.answer()
