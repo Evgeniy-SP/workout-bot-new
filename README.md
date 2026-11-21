@@ -1,6 +1,6 @@
 # 🏋️ Telegram-бот для учёта тренировок (Workout Bot)
 
-![Coverage](./coverage.svg)
+[![Python CI](https://github.com/Evgeniy-SP/workout-bot-new/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/Evgeniy-SP/workout-bot-new/actions/workflows/ci.yml?query=branch%3Amain+event%3Apush)
 
 Персональный бот-дневник тренировок прямо в Telegram: планируешь программы,
 записываешь факт, отслеживаешь прогресс, рекорды и получаешь достижения.

@@ -11,7 +11,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Дает права на авто-коммит бейджа
+      contents: read
 
     steps:
     - name: Checkout code
@@ -32,12 +32,14 @@ jobs:
       run: |
         pytest --cov=app --cov-report=term-missing --cov-report=xml tests/ -v
         
-    - name: Generate coverage badge
+    - name: Add coverage to job summary
       run: |
-        python scripts/generate_badge.py
-        
-    - name: Commit coverage badge
-      uses: stefanzweifel/git-auto-commit-action@v5
-      with:
-        commit_message: "chore: обновлен бейдж покрытия тестами"
-        file_pattern: coverage.svg
+        python - <<'PY'
+        import os
+        import xml.etree.ElementTree as ET
+
+        coverage = ET.parse("coverage.xml").getroot()
+        percent = float(coverage.attrib["line-rate"])
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+            summary.write(f"## Покрытие тестами\n\n**{percent:.2%}** строк приложения\n")
+        PY
