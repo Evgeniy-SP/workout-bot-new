@@ -8,7 +8,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
-    Exercise, SessionExerciseNote, SessionSet, WorkoutSession, WorkoutType,
+    Exercise, SessionExerciseNote, SessionSet, SessionSkippedExercise,
+    WorkoutSession, WorkoutType,
 )
 from app.utils import to_msk
 
@@ -533,3 +534,33 @@ async def add_achievement(session: AsyncSession,
 
     session.add(Achievement(user_id=user_id, code=code))
     await session.commit()
+
+
+# ─── CSV-экспорт (C2.6 Блок 4) ────────────────────────────────────
+
+
+async def get_user_exercise(session: AsyncSession, user_id: int,
+                            exercise_id: int) -> Exercise | None:
+    """Упражнение пользователя по id (проверка владельца через workout_type)."""
+    result = await session.execute(
+        select(Exercise)
+        .join(WorkoutType, Exercise.workout_type_id == WorkoutType.id)
+        .where(Exercise.id == exercise_id, WorkoutType.user_id == user_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_session_skipped_exercise_names(session: AsyncSession,
+                                             session_id: int) -> list[str]:
+    """Названия упражнений, завершённых досрочно (пропущенных) в сессии.
+
+    Нужны для CSV-экспорта тренировки: «выполнено X из Y» считает и их.
+    """
+    result = await session.execute(
+        select(Exercise.name)
+        .join(SessionSkippedExercise,
+              SessionSkippedExercise.exercise_id == Exercise.id)
+        .where(SessionSkippedExercise.session_id == session_id)
+        .order_by(Exercise.sort_order)
+    )
+    return list(result.scalars())

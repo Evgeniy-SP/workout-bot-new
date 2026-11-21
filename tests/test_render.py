@@ -39,6 +39,7 @@ def test_details_shows_note_under_completed_exercise():
         completed=True, exercise=ex, set_number=1, reps=9, weight_kg="60",
         duration_seconds=None,
         completed_at=datetime(2026, 11, 6, 17, 30, tzinfo=timezone.utc),
+        session_id=1, exercise_id=ex.id,  # для метрик отдыха (C2.6 Блок 4)
     )
     note = SimpleNamespace(exercise_id=1, note="отдых 50 сек", exercise=ex)
     text = render_history_details(_ws(sets=[s], exercise_notes=[note]))
@@ -53,6 +54,7 @@ def test_details_without_exercise_notes_still_works():
         completed=True, exercise=ex, set_number=1, reps=9, weight_kg="60",
         duration_seconds=None,
         completed_at=datetime(2026, 11, 6, 17, 30, tzinfo=timezone.utc),
+        session_id=1, exercise_id=ex.id,  # для метрик отдыха (C2.6 Блок 4)
     )
     text = render_history_details(_ws(sets=[s]))
     assert "Жим" in text

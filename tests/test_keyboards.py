@@ -131,13 +131,36 @@ def test_exercise_progress_kb_custom_back():
     kb = exercise_progress_kb(5, 3, 9,
                               back_cb="hist_view:5:3:0:notes_ex:9:0")
     assert kb.inline_keyboard[0][0].callback_data == \
-        "notes_ex:9:0:hist_view:5:3"  # кнопка заметок ведёт в ленту с возвратом
+        "notes_ex:9:0:ex_progress:9:5:3"  # возврат из ленты — на экран прогресса
     assert kb.inline_keyboard[1][0].callback_data == \
+        "exp_ex:9"  # экспорт истории упражнения (C2.6 Блок 4)
+    assert kb.inline_keyboard[2][0].callback_data == \
         "hist_view:5:3:0:notes_ex:9:0"
-    assert "Назад к тренировке" in kb.inline_keyboard[1][0].text
+    assert "Назад к тренировке" in kb.inline_keyboard[2][0].text
     # Без back_cb — как раньше, в детали тренировки
     kb2 = exercise_progress_kb(5, 3, 9)
-    assert kb2.inline_keyboard[1][0].callback_data == "hist_view:5:3"
+    assert kb2.inline_keyboard[2][0].callback_data == "hist_view:5:3"
+
+
+def test_exercise_progress_kb_notes_return_with_origin():
+    """При заходе из архива заметок origin пробрасывается и в ленту."""
+    from app.keyboards.workout_kb import exercise_progress_kb
+
+    kb = exercise_progress_kb(5, 3, 9, show_notes_btn=True,
+                              origin="notes_main:0")
+    assert kb.inline_keyboard[0][0].callback_data == \
+        "notes_ex:9:0:ex_progress:9:5:3:notes_main:0"
+
+
+def test_notes_exercise_kb_back_to_progress():
+    """В ленте заметок, открытой с экрана прогресса, кнопка ведёт
+    в прогресс и подписана «Назад к прогрессу»."""
+    from app.keyboards.workout_kb import notes_exercise_kb
+
+    kb = notes_exercise_kb(9, 0, False, [(1, "18.11.2026", "заметка")],
+                           origin="ex_progress:9:5:3")
+    assert kb.inline_keyboard[-1][0].callback_data == "ex_progress:9:5:3"
+    assert "Назад к прогрессу" in kb.inline_keyboard[-1][0].text
 
 
 def test_exercise_progress_kb_hides_notes_button_in_notes_flow():
@@ -146,8 +169,10 @@ def test_exercise_progress_kb_hides_notes_button_in_notes_flow():
     from app.keyboards.workout_kb import exercise_progress_kb
 
     kb = exercise_progress_kb(5, 3, 9, show_notes_btn=False)
-    assert len(kb.inline_keyboard) == 1  # только «Назад к тренировке"
-    assert kb.inline_keyboard[0][0].callback_data == "hist_view:5:3"
+    # Экспорт остаётся (он не замыкает петлю), заметок нет
+    assert len(kb.inline_keyboard) == 2
+    assert kb.inline_keyboard[0][0].callback_data == "exp_ex:9"
+    assert kb.inline_keyboard[1][0].callback_data == "hist_view:5:3"
 
 
 def test_main_menu_layout():
@@ -170,3 +195,16 @@ def test_notes_search_results_kb_fits_button_limit():
     assert rows[0][0].callback_data == "hist_view:1:0:0:notes_main:0"
     assert len(rows[0][0].text) <= 64
     assert rows[-1][0].callback_data == "notes_main:0"
+
+
+def test_after_finish_kb_export_button():
+    """На экране итогов — кнопка экспорта тренировки (C2.6 Блок 4)."""
+    from app.keyboards.workout_kb import after_finish_kb
+
+    kb = after_finish_kb(session_id=42)
+    assert kb.inline_keyboard[0][0].callback_data == "exp_sess:42"
+    assert kb.inline_keyboard[1][0].callback_data == "wt_list"
+    # Без session_id — как раньше, только «В меню тренировок»
+    kb2 = after_finish_kb()
+    assert len(kb2.inline_keyboard) == 1
+    assert kb2.inline_keyboard[0][0].callback_data == "wt_list"

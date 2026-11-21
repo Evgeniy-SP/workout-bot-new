@@ -36,6 +36,24 @@ def calculate_tonnage(sets: list) -> float:
     return total
 
 
+def strict_tonnage(sets: list) -> float:
+    """Тоннаж строго в кг — как на экране деталей тренировки.
+
+    Считаем только подходы, где weight_kg — чистое число («14 блоков»,
+    «Своё тело» честно пропускаем). Отличается от calculate_tonnage,
+    которая для дашборда парсит число из любой строки (она «на карандаше»).
+    Используем в CSV-экспорте, чтобы цифры сходились с экраном тренировки.
+    """
+    total = 0.0
+    for s in sets:
+        if s.completed and s.weight_kg:
+            try:
+                total += (s.reps or 0) * float(s.weight_kg)
+            except ValueError:
+                pass
+    return total
+
+
 def month_activity(sets: list) -> tuple[int, int]:
     """(выполненных подходов, уникальных выполненных упражнений) за месяц."""
     completed = [s for s in sets if s.completed and s.exercise]

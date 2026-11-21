@@ -17,6 +17,9 @@ from app.keyboards.workout_kb import (
     finish_confirm_kb, training_remove_menu_kb,
 )
 from app.services import achievement_service as ach
+from app.services.analytics_service import (
+    average_rest, average_rest_between_exercises,
+)
 from app.services.training_service import (
     load_workout, render_approach_screen, render_list,
 )
@@ -342,17 +345,28 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
     duration_sec = int((ws.finished_at - ws.started_at).total_seconds())
     minutes = duration_sec // 60
 
-    from app.utils import fmt_msk_datetime
+    # Средний отдых — те же метрики, что в месячной аналитике
+    all_sets = [s for group in sets_by_ex.values() for s in group]
+    rest = average_rest(all_sets)
+    rest_ex = average_rest_between_exercises(all_sets)
+
+    from app.utils import fmt_msk_datetime, format_hm
     finished_time_str = fmt_msk_datetime(ws.finished_at)
 
     lines = [
         f"🏁 <b>{wt.name}</b> — завершена!",
         f"<i>Завершена: {finished_time_str} (МСК)</i>", # <-- Добавили время
         "", # <-- Добавили отступ
-        f"⏱ Длительность: ~{minutes} мин",
+        f"⏱ Длительность: ~{format_hm(minutes)}",
         f"📊 Выполнено: {done_ex} из {total_ex} упражнений",
-        "",
     ]
+    if rest is not None:
+        lines.append(f"😴 Средний отдых между подходами: "
+                     f"{round(rest / 60)} мин")
+    if rest_ex is not None:
+        lines.append(f"🚶 Средний отдых между упражнениями: "
+                     f"{round(rest_ex / 60)} мин")
+    lines.append("")
 
     # Текстовый цикл (для красивого вывода в сообщении)
     for ex in wt.exercises:
@@ -413,7 +427,7 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
         lines.append(f"📝 <b>Заметка к тренировке:</b>\n<i>{ws.notes}</i>")
 
     await callback.message.edit_text("\n".join(lines),
-                                     reply_markup=after_finish_kb())
+                                     reply_markup=after_finish_kb(session_id))
     await callback.answer("Тренировка завершена")
 
     # Мгновенное сообщение о разблокированных ачивках — ПОСЛЕ экрана

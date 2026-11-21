@@ -18,6 +18,7 @@ from app.render import render_history_details
 from app.services.chart_service import (
     generate_progress_chart, generate_progress_chart_two,
 )
+from app.services.analytics_service import average_rest
 from app.services.progress_service import (
     collect_workout_stats, daily_max_durations, daily_max_reps,
     daily_max_weights, to_chart_points,
@@ -174,6 +175,10 @@ async def cb_history_view(callback: CallbackQuery, session: AsyncSession):
                   callback_data=f"ex_progress:{ex_id}:{session_id}:{page}"
                                + (f":{origin}" if origin else ""))
 
+    # CSV-экспорт этой тренировки (C2.6 Блок 4)
+    kb.button(text="📤 Экспорт тренировки (CSV)",
+              callback_data=f"exp_sess:{session_id}")
+
     if origin:
         kb.button(text="⬅️ Назад к заметкам", callback_data=origin)
     else:
@@ -255,6 +260,12 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
     if not history_sets:
         return await callback.answer("Нет данных для графика", show_alert=True)
 
+    # Средний отдых между подходами — та же метрика, что в аналитике
+    # и на экране итогов (C2.6 Блок 4)
+    rest = average_rest(history_sets)
+    rest_line = (f"\n😴 Средний отдых между подходами: "
+                 f"<b>{round(rest / 60)} мин</b>") if rest is not None else ""
+
     # Статистика: в скольких тренировках каждого типа выполнялось упражнение
     workout_stats = collect_workout_stats(history_sets)
     stats_lines = [
@@ -290,7 +301,8 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
             f"🏆 <b>Личные рекорды:</b>\n"
             f"⚖️ Максимальный вес: <b>{weight_display}</b>\n"
             f"💪 Лучший подход по тоннажу: <b>{best_set_text}</b>\n"
-            f"📊 Тоннаж: <b>{prs['max_volume']:g} {volume_unit}</b>\n"
+            f"📊 Тоннаж: <b>{prs['max_volume']:g} {volume_unit}</b>"
+            f"{rest_line}\n"
             f"{note_line}\n\n"
             f"📉 График: максимальный вес (сверху) и максимум повторов"
             f" за подход (снизу) по каждому дню."
@@ -300,7 +312,9 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
 
         if not daily_max:
             await callback.message.answer(
-                text, reply_markup=exercise_progress_kb(session_id, page, ex.id, back_cb=back_cb, show_notes_btn=not origin))
+                text, reply_markup=exercise_progress_kb(session_id, page, ex.id, back_cb=back_cb,
+                                     show_notes_btn=not origin,
+                                     origin=origin))
             await callback.answer()
             return
 
@@ -335,7 +349,8 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
             f"{info_text}\n\n"
             f"🏆 <b>Личные рекорды:</b>\n"
             f"⏱ Максимальное время за раз: <b>{_format_time(max_duration)}</b>\n"
-            f"⏳ Общее время за всё время: <b>{_format_time(total_duration)}</b>\n"
+            f"⏳ Общее время за всё время: <b>{_format_time(total_duration)}</b>"
+            f"{rest_line}\n"
             f"{note_line}\n\n"
             f"📉 График: максимальное время за каждый день."
         )
@@ -344,7 +359,9 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
 
         if not daily_max:
             await callback.message.answer(
-                text, reply_markup=exercise_progress_kb(session_id, page, ex.id, back_cb=back_cb, show_notes_btn=not origin))
+                text, reply_markup=exercise_progress_kb(session_id, page, ex.id, back_cb=back_cb,
+                                     show_notes_btn=not origin,
+                                     origin=origin))
             await callback.answer()
             return
 
@@ -366,6 +383,8 @@ async def cb_exercise_progress(callback: CallbackQuery, session: AsyncSession):
     await callback.message.answer_photo(
         photo=photo,
         caption=text,
-        reply_markup=exercise_progress_kb(session_id, page, ex.id, back_cb=back_cb, show_notes_btn=not origin)
+        reply_markup=exercise_progress_kb(session_id, page, ex.id, back_cb=back_cb,
+                                     show_notes_btn=not origin,
+                                     origin=origin)
     )
     await callback.answer()

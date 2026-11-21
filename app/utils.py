@@ -52,6 +52,12 @@ def fmt_msk_datetime(dt: datetime) -> str:
     return to_msk(dt).strftime("%d.%m.%Y %H:%M")
 
 
+def format_hm(minutes: int) -> str:
+    """Длительность с часами: 692 -> '11 ч 32 мин', 28 -> '28 мин'."""
+    hours, rem = divmod(minutes, 60)
+    return f"{hours} ч {rem} мин" if hours else f"{rem} мин"
+
+
 def format_weight(weight: str | None) -> str:
     """Красиво выводит вес: добавляет 'кг' если это число, или оставляет текст."""
     if not weight:

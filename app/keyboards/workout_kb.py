@@ -486,10 +486,15 @@ def training_remove_menu_kb(session_id: int, removable: list[Exercise]) -> Inlin
     return kb.as_markup()
 
 
-def after_finish_kb() -> InlineKeyboardMarkup:
+def after_finish_kb(session_id: int | None = None) -> InlineKeyboardMarkup:
     """Кнопки после завершения тренировки."""
     kb = InlineKeyboardBuilder()
+    if session_id is not None:
+        # Сразу сохранить итоги файлом (C2.6 Блок 4)
+        kb.button(text="📤 Экспорт тренировки (CSV)",
+                  callback_data=f"exp_sess:{session_id}")
     kb.button(text="🏋️ В меню тренировок", callback_data="wt_list")
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -761,7 +766,12 @@ def notes_exercise_kb(exercise_id: int, page: int,
         kb.row(*nav)
 
     if origin:
-        kb.row(InlineKeyboardButton(text="⬅️ Назад к тренировке",
+        # Из ленты, открытой с экрана прогресса, возвращаем в прогресс,
+        # а не в детали тренировки (C2.6 Блок 4)
+        back_label = ("⬅️ Назад к прогрессу"
+                      if origin.startswith("ex_progress:")
+                      else "⬅️ Назад к тренировке")
+        kb.row(InlineKeyboardButton(text=back_label,
                                     callback_data=origin))
     else:
         kb.row(InlineKeyboardButton(text="⬅️ К заметкам",
@@ -852,6 +862,8 @@ def analytics_kb(year: int, month: int,
     kb.button(text="📈 График по неделям",
               callback_data=f"an_chart:{year}:{month}")
     kb.button(text="🏆 Ачивки", callback_data=f"an_ach:{year}:{month}")
+    kb.button(text="📤 Экспорт месяца (CSV)",
+              callback_data=f"exp_month:{year}:{month}")
 
     nav_row = []
     if prev_ym:
@@ -1063,21 +1075,30 @@ def exercise_progress_kb(session_id: int, page: int,
                          exercise_id: int | None = None,
                          back_cb: str | None = None,
                          show_notes_btn: bool = True,
+                         origin: str = "",
                          ) -> InlineKeyboardMarkup:
     """Клавиатура для экрана прогресса упражнения.
 
     back_cb — куда вести кнопку «Назад» (если None — в детали тренировки).
     show_notes_btn — прятать «📒 Заметки по упражнению», если мы и так
     пришли сюда из архива заметок (иначе кнопка замыкает петлю).
+    origin — «адрес возврата» до деталей тренировки (проброс из истории).
     """
     kb = InlineKeyboardBuilder()
     # Архив заметок по этому упражнению (кнопка из гибридного сценария).
-    # В конец зашит «адрес возврата» — лента в этом случае вернёт
-    # пользователя назад в детали тренировки, а не в общий архив.
+    # «Адрес возврата» ленты — сам экран прогресса: из заметок возвращаем
+    # туда, откуда зашли, а не в детали тренировки (C2.6 Блок 4, правка
+    # навигации по репорту Жени).
     if exercise_id and show_notes_btn:
+        ret = f"ex_progress:{exercise_id}:{session_id}:{page}"
+        if origin:
+            ret += f":{origin}"
         kb.button(text="📒 Заметки по упражнению",
-                  callback_data=(f"notes_ex:{exercise_id}:0:"
-                                 f"hist_view:{session_id}:{page}"))
+                  callback_data=f"notes_ex:{exercise_id}:0:{ret}")
+    # CSV-экспорт истории упражнения (C2.6 Блок 4)
+    if exercise_id:
+        kb.button(text="📤 Экспорт CSV",
+                  callback_data=f"exp_ex:{exercise_id}")
     # Возвращаемся к деталям этой же тренировки, откуда пришли
     kb.button(text="⬅️ Назад к тренировке",
               callback_data=back_cb or f"hist_view:{session_id}:{page}")

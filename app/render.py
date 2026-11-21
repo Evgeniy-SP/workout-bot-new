@@ -3,7 +3,7 @@ import random
 from datetime import datetime
 
 from app.db.models import Exercise, WorkoutType
-from app.utils import format_duration, format_weight
+from app.utils import format_duration, format_hm, format_weight
 
 
 def render_workout_card(wt: WorkoutType) -> str:
@@ -320,6 +320,11 @@ def render_history_details(ws) -> str:
         duration_min = int(
             (ws.finished_at - ws.started_at).total_seconds() // 60)
 
+    # Средний отдых между упражнениями — та же метрика, что в аналитике
+    # и на экране итогов (C2.6 Блок 4, доработка)
+    from app.services.analytics_service import average_rest_between_exercises
+    rest_ex = average_rest_between_exercises(list(ws.sets))
+
     # === ЯКОРЬ ШИРИНЫ ===
     # Невидимая строка для расширения пузыря Telegram
     divider = "⎯" * 19
@@ -328,7 +333,7 @@ def render_history_details(ws) -> str:
         f"{divider}\n"
         f"🏁 <b>{ws.workout_type.name}</b>\n"
         f"📅 {fmt_msk_datetime(ws.started_at)} (МСК)\n"
-        f"⏱ Длительность: ~{duration_min} мин\n"
+        f"⏱ Длительность: ~{format_hm(duration_min)}\n"
         f"{divider}\n\n"
     )
 
@@ -408,5 +413,9 @@ def render_history_details(ws) -> str:
             ex = n.exercise
             kind_icon = "🏋️" if ex.kind == "strength" else "🏃"
             text += f"{kind_icon} <b>{ex.name}</b>\n📝 <i>{n.note}</i>\n\n"
+
+    if rest_ex is not None:
+        text += (f"\n🚶 Средний отдых между упражнениями: "
+                 f"{round(rest_ex / 60)} мин")
 
     return text.strip()
