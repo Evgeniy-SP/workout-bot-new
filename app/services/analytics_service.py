@@ -3,7 +3,8 @@
 Чистые функции без обращений к БД и Telegram: принимают сессии/подходы,
 возвращают числа и списки для дашборда. Легко тестируются.
 """
-from collections import defaultdict
+from collections import Counter, defaultdict
+from datetime import date, timedelta
 from re import compile as re_compile
 from statistics import median
 
@@ -59,6 +60,37 @@ def month_activity(sets: list) -> tuple[int, int]:
     completed = [s for s in sets if s.completed and s.exercise]
     unique_exercises = {s.exercise_id for s in completed}
     return len(completed), len(unique_exercises)
+
+
+def all_time_bests(sessions: list) -> tuple[
+    tuple[date, int], tuple[date, int], tuple[date, float] | None
+] | None:
+    """Рекорды по завершённым сессиям: месяц, неделя и тоннаж за тренировку."""
+    months: Counter[date] = Counter()
+    weeks: Counter[date] = Counter()
+    best_tonnage = None
+    for session in sessions:
+        if not session.started_at:
+            continue
+        started = to_msk(session.started_at)
+        day = started.date()
+        months[day.replace(day=1)] += 1
+        weeks[day - timedelta(days=day.weekday())] += 1
+
+        tonnage = strict_tonnage(session.sets)
+        if tonnage > 0:
+            candidate = (-tonnage, started)
+            if best_tonnage is None or candidate < best_tonnage:
+                best_tonnage = candidate
+
+    if not months:
+        return None
+    best_month = min(months.items(), key=lambda item: (-item[1], item[0]))
+    best_week = min(weeks.items(), key=lambda item: (-item[1], item[0]))
+    tonnage_record = (
+        (best_tonnage[1].date(), -best_tonnage[0]) if best_tonnage else None
+    )
+    return best_month, best_week, tonnage_record
 
 
 def month_top_stats(sets: list, limit: int = 3

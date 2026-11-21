@@ -440,6 +440,23 @@ async def get_sessions_in_range(session: AsyncSession, user_id: int,
     return list(result.scalars())
 
 
+async def get_finished_sessions_with_sets(
+    session: AsyncSession, user_id: int,
+) -> list[WorkoutSession]:
+    """История завершённых тренировок с подходами для доски рекордов."""
+    from sqlalchemy.orm import selectinload
+
+    result = await session.scalars(
+        select(WorkoutSession)
+        .where(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.finished_at.is_not(None),
+        )
+        .options(selectinload(WorkoutSession.sets))
+    )
+    return list(result)
+
+
 # ─── PR и ачивки (C2.6) ───────────────────────────────────────────
 
 

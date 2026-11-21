@@ -1,6 +1,6 @@
 """Хэндлеры раздела «📅 Аналитика» (C2.5)."""
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Router, F
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
@@ -9,16 +9,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.queries import (
     count_exercises_with_history, count_finished_sessions,
     get_all_completed_sets, get_finished_session_dates,
+    get_finished_sessions_with_sets,
     get_months_with_sessions, get_sessions_in_range,
     get_user_achievement_codes,
 )
 from app.keyboards.workout_kb import (
-    MONTH_NAMES, achievements_kb, analytics_kb,
+    MONTH_NAMES, achievements_kb, analytics_best_kb, analytics_kb,
 )
 from app.services import achievement_service as ach
 from app.services.analytics_service import (
-    average_rest, average_rest_between_exercises, calculate_tonnage,
-    month_activity, month_top_stats, weekly_activity,
+    all_time_bests, average_rest, average_rest_between_exercises,
+    calculate_tonnage, month_activity, month_top_stats, weekly_activity,
 )
 from app.services.chart_service import generate_grouped_bar_chart
 from app.services.training_service import get_user
@@ -206,6 +207,39 @@ async def cb_analytics_chart(callback: CallbackQuery, session: AsyncSession):
                               filename=f"analytics_{year}_{month}.png")
 
     await callback.message.answer_photo(photo=photo)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("an_best:"))
+async def cb_analytics_best(callback: CallbackQuery, session: AsyncSession):
+    _, year, month = callback.data.split(":")
+    user = await get_user(session, callback.from_user.id)
+    if not user:
+        return await callback.answer("Сначала /start", show_alert=True)
+
+    records = all_time_bests(await get_finished_sessions_with_sets(session, user.id))
+    lines = ["🏅 <b>Лучшее за всё время</b>", ""]
+    if records is None:
+        lines.append("Пока нет завершённых тренировок.")
+    else:
+        (month_start, month_count), (monday, week_count), tonnage = records
+        sunday = monday + timedelta(days=6)
+        month_title = f"{MONTH_NAMES[month_start.month - 1]} {month_start.year}"
+        week_title = f"{monday:%d.%m.%Y} – {sunday:%d.%m.%Y}"
+        lines.extend([
+            f"📅 Лучший месяц: {month_title} · тренировок: <b>{month_count}</b>",
+            f"🗓 Лучшая неделя: {week_title} · тренировок: <b>{week_count}</b>",
+        ])
+        if tonnage is None:
+            lines.append("🚚 Рекордный тоннаж: пока нет результатов в кг.")
+        else:
+            day, kilograms = tonnage
+            weight = f"{kilograms:,.0f}".replace(",", " ")
+            lines.append(f"🚚 Рекордный тоннаж: <b>{weight} кг</b> · {day:%d.%m.%Y}")
+
+    await callback.message.edit_text(
+        "\n".join(lines), reply_markup=analytics_best_kb(int(year), int(month)),
+    )
     await callback.answer()
 
 

@@ -1,10 +1,10 @@
 """Тесты для analytics_service — чистые функции, БД не нужна."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 from app.services.analytics_service import (
-    average_rest, average_rest_between_exercises, calculate_tonnage,
-    month_activity, month_top_stats, weekly_activity,
+    all_time_bests, average_rest, average_rest_between_exercises,
+    calculate_tonnage, month_activity, month_top_stats, weekly_activity,
 )
 
 UTC = timezone.utc
@@ -26,6 +26,33 @@ def make_session(day, sets, session_id=1):
     """Завершённая сессия (по МСК) с заданным числом месяца и подходами."""
     started_at = datetime(2026, 11, day, 10, tzinfo=UTC)
     return SimpleNamespace(id=session_id, started_at=started_at, sets=sets)
+
+
+def test_all_time_bests_uses_msk_and_calendar_weeks_across_months():
+    sessions = [
+        make_session(2, [
+            make_set(weight="50", reps=10),
+            make_set(weight="99 блоков", reps=10),
+            make_set(weight="120", reps=10, completed=False),
+        ]),
+        make_session(1, [make_set(weight="50", reps=10)]),
+        SimpleNamespace(started_at=datetime(2026, 10, 30, 22, tzinfo=UTC),
+                        sets=[make_set(weight="50", reps=10)]),
+        SimpleNamespace(started_at=datetime(2026, 10, 31, 12, tzinfo=UTC), sets=[]),
+    ]
+
+    assert all_time_bests(sessions) == (
+        (date(2026, 10, 1), 2),
+        (date(2026, 10, 26), 3),
+        (date(2026, 10, 31), 500.0),
+    )
+
+
+def test_all_time_bests_handles_empty_history_and_missing_kg():
+    assert all_time_bests([]) is None
+    assert all_time_bests([make_session(1, [make_set(weight="12 блоков", reps=10)])]) == (
+        (date(2026, 11, 1), 1), (date(2026, 10, 26), 1), None,
+    )
 
 
 # ─── calculate_tonnage ───────────────────────────────────────────

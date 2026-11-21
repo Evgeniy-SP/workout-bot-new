@@ -861,9 +861,11 @@ def analytics_kb(year: int, month: int,
 
     kb.button(text="📈 График по неделям",
               callback_data=f"an_chart:{year}:{month}")
-    kb.button(text="🏆 Ачивки", callback_data=f"an_ach:{year}:{month}")
     kb.button(text="📤 Экспорт месяца (CSV)",
               callback_data=f"exp_month:{year}:{month}")
+    kb.button(text="🏆 Ачивки", callback_data=f"an_ach:{year}:{month}")
+    kb.button(text="🏅 Лучшее", callback_data=f"an_best:{year}:{month}")
+    kb.adjust(2)
 
     nav_row = []
     if prev_ym:
@@ -876,8 +878,15 @@ def analytics_kb(year: int, month: int,
         nav_row.append(InlineKeyboardButton(
             text=f"{MONTH_NAMES[nm - 1]} {ny} →",
             callback_data=f"an_month:{ny}:{nm}"))
-    kb.row(*nav_row)
+    if nav_row:
+        kb.row(*nav_row)
 
+    return kb.as_markup()
+
+
+def analytics_best_kb(year: int, month: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📅 К аналитике", callback_data=f"an_month:{year}:{month}")
     return kb.as_markup()
 
 
