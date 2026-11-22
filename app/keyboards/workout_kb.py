@@ -866,6 +866,7 @@ def analytics_kb(year: int, month: int,
     kb.button(text="🏆 Ачивки", callback_data=f"an_ach:{year}:{month}")
     kb.button(text="🏅 Лучшее", callback_data=f"an_best:{year}:{month}")
     kb.adjust(2)
+    kb.row(InlineKeyboardButton(text="📊 Итоги", callback_data=f"an_year:{year}:{month}"))
 
     nav_row = []
     if prev_ym:
@@ -881,6 +882,45 @@ def analytics_kb(year: int, month: int,
     if nav_row:
         kb.row(*nav_row)
 
+    return kb.as_markup()
+
+
+def analytics_retrospective_kb(origin_year: int, origin_month: int, *,
+                               seasonal: bool = False,
+                               return_year: int | None = None,
+                               previous: tuple[str, int] | None = None,
+                               following: tuple[str, int] | None = None) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    origin = f"{origin_year}:{origin_month}"
+    prefix = f"{'an_season' if seasonal else 'an_year'}:{origin}"
+    year_suffix = f":{return_year}" if return_year is not None else ""
+    season_suffix = year_suffix if seasonal else ""
+    periods = []
+    if previous is not None:
+        label, key = previous
+        periods.append(InlineKeyboardButton(
+            text=f"← {label}", callback_data=f"{prefix}:{key}{season_suffix}",
+        ))
+    if following is not None:
+        label, key = following
+        periods.append(InlineKeyboardButton(
+            text=f"{label} →", callback_data=f"{prefix}:{key}{season_suffix}",
+        ))
+    if periods:
+        kb.row(*periods)
+    if seasonal:
+        kb.row(InlineKeyboardButton(
+            text="📅 Назад к годовым итогам", callback_data=f"an_year:{origin}{year_suffix}",
+        ))
+    else:
+        kb.row(
+            InlineKeyboardButton(
+                text="🍂 Сезонные итоги", callback_data=f"an_season:{origin}:0{year_suffix}",
+            ),
+            InlineKeyboardButton(
+                text="📅 Назад к аналитике", callback_data=f"an_month:{origin}",
+            ),
+        )
     return kb.as_markup()
 
 

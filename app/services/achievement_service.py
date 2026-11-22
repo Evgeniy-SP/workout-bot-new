@@ -390,6 +390,10 @@ def has_seasonal_archive(today: date) -> bool:
     return any(challenge.end <= today for challenge in SEASONAL_CHALLENGES)
 
 
+def yearly_achievement_code(year: int) -> str:
+    return f"year_review_{year}"
+
+
 def render_seasonal_challenges(*, codes: set, session_dates: list[date], all_sets: list,
                                today: date, archive: bool = False) -> list[str]:
     title = "📦 <b>Архив сезонных челленджей</b>" if archive else "🎯 <b>Сезонные</b>"
@@ -480,4 +484,11 @@ def render_achievements_screen(*, codes: set, session_dates: list,
             line(f"exercises_{n}",
                  exercises_count if exercises_count else None,
                  n, " упр."))
+    yearly_codes = sorted((code for code in codes if code.startswith("year_review_")),
+                          reverse=True)
+    if yearly_codes:
+        lines.extend(["", "🎖 <b>Памятные</b>"])
+        for code in yearly_codes:
+            year = escape(code.removeprefix("year_review_"))
+            lines.append(f"✅ <b>Тренировочный год {year}</b>")
     return "\n".join(lines)

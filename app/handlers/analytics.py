@@ -1,6 +1,6 @@
 """Хэндлеры раздела «📅 Аналитика» (C2.5)."""
 import asyncio
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from aiogram import Router, F
 from aiogram.exceptions import TelegramBadRequest
@@ -8,7 +8,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.queries import (
-    count_exercises_with_history, count_finished_sessions,
+    add_achievement, count_exercises_with_history, count_finished_sessions,
     get_all_completed_sets, get_finished_session_dates,
     get_finished_sessions_with_sets,
     get_months_with_sessions, get_sessions_in_range,
@@ -16,15 +16,18 @@ from app.db.queries import (
 )
 from app.keyboards.workout_kb import (
     MONTH_NAMES, achievements_kb, analytics_best_kb, analytics_kb,
+    analytics_retrospective_kb,
 )
 from app.services import achievement_service as ach
 from app.services.analytics_service import (
-    all_time_bests, average_rest, average_rest_between_exercises,
-    calculate_tonnage, month_activity, month_top_stats, weekly_activity,
+    all_time_bests, available_retrospective_seasons, available_retrospective_years, average_rest,
+    average_rest_between_exercises, best_training_month, calculate_tonnage,
+    month_activity, month_top_stats, season_end, season_start, season_title,
+    total_training_time, weekly_activity,
 )
 from app.services.chart_service import generate_grouped_bar_chart
 from app.services.training_service import get_user
-from app.utils import MSK
+from app.utils import MSK, to_msk
 
 router = Router()
 
@@ -116,10 +119,7 @@ async def _render_dashboard(session: AsyncSession, user_id: int,
     rest = average_rest(all_sets)
     rest_ex = average_rest_between_exercises(all_sets)
 
-    total_seconds = sum(
-        int((ses.finished_at - ses.started_at).total_seconds())
-        for ses in sessions if ses.finished_at and ses.started_at
-    )
+    total_seconds = total_training_time(sessions)
 
     lines = [
         f"📅 <b>Аналитика: {month_title}</b>",
@@ -212,6 +212,101 @@ async def cb_analytics_chart(callback: CallbackQuery, session: AsyncSession):
                               filename=f"analytics_{year}_{month}.png")
 
     await callback.message.answer_photo(photo=photo)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(("an_year:", "an_season:")))
+async def cb_analytics_retrospective(callback: CallbackQuery, session: AsyncSession):
+    action, origin_year, origin_month, *requested = callback.data.split(":")
+    origin = (int(origin_year), int(origin_month))
+    seasonal = action == "an_season"
+    return_year = int(requested[1]) if seasonal and len(requested) > 1 else None
+    user = await get_user(session, callback.from_user.id)
+    if not user:
+        return await callback.answer("Сначала /start", show_alert=True)
+
+    today = datetime.now(MSK).date()
+    dates = await get_finished_session_dates(session, user.id)
+    if seasonal:
+        periods = {start.year * 100 + start.month: (start, season_title(start))
+                   for start in available_retrospective_seasons(dates, today)}
+        origin_start = season_start(date(*origin, 1))
+        default_key = origin_start.year * 100 + origin_start.month
+    else:
+        periods = {year: (date(year, 1, 1), str(year))
+                   for year in available_retrospective_years(dates, today)}
+        default_key = origin[0]
+
+    if not periods:
+        text = (
+            "🍂 <b>Итоги сезона</b>\n\nПока нет завершённых тренировок."
+            if seasonal else
+            "📊 <b>Итоги года</b>\n\nИтоги текущего года откроются в декабре. "
+            "В прошлых годах пока нет завершённых тренировок."
+        )
+        await callback.message.edit_text(
+            text, reply_markup=analytics_retrospective_kb(
+                *origin, seasonal=seasonal, return_year=return_year,
+            ),
+        )
+        return await callback.answer()
+
+    keys = list(periods)
+    key = (int(requested[0]) if requested else 0) or default_key
+    if key not in periods:
+        key = keys[-1]
+    index = keys.index(key)
+    start, label = periods[key]
+    year = start.year
+    period_end = season_end(start) if seasonal else date(year + 1, 1, 1)
+    is_current = today < period_end
+    end = today + timedelta(days=1) if is_current else period_end
+    sessions = await get_sessions_in_range(
+        session, user.id, datetime.combine(start, time.min, tzinfo=MSK),
+        datetime.combine(end, time.min, tzinfo=MSK),
+    )
+    heading = f"🍂 <b>Итоги сезона · {label}</b>" if seasonal else f"📊 <b>Итоги {year} года</b>"
+    lines = [heading]
+    if is_current:
+        lines.append(f"<i>По состоянию на {today:%d.%m.%Y}</i>")
+    lines.append("")
+    if not sessions:
+        period_name = "сезон" if seasonal else "год"
+        lines.append(f"За этот {period_name} пока нет завершённых тренировок.")
+    else:
+        best_month = best_training_month(
+            [to_msk(workout.started_at).date() for workout in sessions],
+        )
+        all_sets = await get_all_completed_sets(session, user.id)
+        record_count = len(ach.pr_exercises(all_sets, start, end))
+        lines.extend([
+            f"🏋️ Тренировок: <b>{len(sessions)}</b>",
+            f"⏱ Общее время: <b>{_format_hours(total_training_time(sessions))}</b>",
+        ])
+        if best_month:
+            month, count = best_month
+            month_label = MONTH_NAMES[month.month - 1]
+            if seasonal:
+                month_label += f" {month.year}"
+            lines.append(f"📅 Самый активный месяц: <b>{month_label}</b>"
+                         f" · тренировок: <b>{count}</b>")
+        lines.append(f"🏅 Упражнений с личным рекордом: <b>{record_count}</b>")
+        if not seasonal and not is_current:
+            code = ach.yearly_achievement_code(year)
+            if code not in await get_user_achievement_codes(session, user.id):
+                await add_achievement(session, user.id, code, skip_existing=True)
+            lines.extend(["", f"🎖 <b>Тренировочный год {year}</b>"])
+
+    previous = keys[index - 1] if index else None
+    following = keys[index + 1] if index + 1 < len(keys) else None
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=analytics_retrospective_kb(
+            *origin, seasonal=seasonal, return_year=return_year if seasonal else year,
+            previous=(periods[previous][1], previous) if previous is not None else None,
+            following=(periods[following][1], following) if following is not None else None,
+        ),
+    )
     await callback.answer()
 
 

@@ -372,3 +372,13 @@ def test_screen_weight_gain_unlocked_with_name():
         today=date(2026, 11, 19), all_sets=[])
     assert "✅ 📈 <b>Вес +20%</b>" in text
     assert " · Жим &lt;гантели&gt;" in text
+
+
+def test_yearly_achievement_is_separate_from_permanent_achievement_count():
+    code = ach.yearly_achievement_code(2026)
+    text = ach.render_achievements_screen(
+        codes={code}, session_dates=[], workouts_count=1, exercises_count=0,
+        pr_total=0, weight_gain_names=[], today=date(2027, 1, 1), all_sets=[],
+    )
+    assert "0 из 14" in text
+    assert "✅ <b>Тренировочный год 2026</b>" in text

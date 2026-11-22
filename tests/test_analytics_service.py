@@ -3,11 +3,41 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 from app.services.analytics_service import (
-    all_time_bests, average_rest, average_rest_between_exercises,
-    calculate_tonnage, month_activity, month_top_stats, weekly_activity,
+    all_time_bests, available_retrospective_seasons, available_retrospective_years, average_rest,
+    average_rest_between_exercises, best_training_month, calculate_tonnage,
+    month_activity, month_top_stats, season_end, season_start, season_title, weekly_activity,
 )
 
 UTC = timezone.utc
+
+
+def test_retrospective_years_open_in_december_and_keep_years_with_history():
+    dates = [date(2024, 10, 1), date(2026, 11, 1)]
+    assert available_retrospective_years(dates, date(2026, 11, 30)) == [2024]
+    assert available_retrospective_years(dates, date(2026, 12, 1)) == [2024, 2026]
+    assert available_retrospective_years(dates, date(2027, 1, 1)) == [2024, 2026]
+
+
+def test_retrospective_best_month_counts_sessions_and_breaks_ties_by_date():
+    assert best_training_month([]) is None
+    dates = [date(2026, 12, 1)] * 2 + [date(2026, 1, 1)] * 2
+    assert best_training_month(dates) == (date(2026, 1, 1), 2)
+
+
+def test_seasonal_retrospective_includes_autumn_and_groups_winter_across_years():
+    autumn = date(2026, 9, 1)
+    winter = date(2026, 12, 1)
+    spring = date(2027, 3, 1)
+    dates = [date(2026, 10, 2), winter, date(2027, 1, 1), date(2027, 2, 28), spring]
+
+    assert available_retrospective_seasons(dates, date(2026, 11, 30)) == [autumn]
+    assert available_retrospective_seasons(dates, date(2027, 2, 28)) == [autumn, winter]
+    assert available_retrospective_seasons(dates, spring) == [autumn, winter, spring]
+    assert season_end(autumn) == winter
+    assert season_end(winter) == spring
+    assert season_title(winter) == "Зима 2026/27"
+    assert season_start(date(2028, 2, 29)) == date(2027, 12, 1)
+    assert [season_start(date(2027, month, 30)).month for month in (4, 7, 10)] == [3, 6, 9]
 
 
 def make_set(weight=None, reps=None, duration=None, session_id=1,

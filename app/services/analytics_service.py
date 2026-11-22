@@ -62,6 +62,52 @@ def month_activity(sets: list) -> tuple[int, int]:
     return len(completed), len(unique_exercises)
 
 
+def total_training_time(sessions: list) -> int:
+    return sum(
+        int((session.finished_at - session.started_at).total_seconds())
+        for session in sessions if session.finished_at and session.started_at
+    )
+
+
+def best_training_month(dates: list[date]) -> tuple[date, int] | None:
+    months = Counter(day.replace(day=1) for day in dates)
+    return min(months.items(), key=lambda item: (-item[1], item[0]), default=None)
+
+
+def available_retrospective_years(dates: list[date], today: date) -> list[int]:
+    """Закрытые годы с тренировками и текущий год начиная с декабря."""
+    years = {day.year for day in dates if day.year < today.year}
+    if today.month == 12:
+        years.add(today.year)
+    return sorted(years)
+
+
+def season_start(day: date) -> date:
+    """Первый день календарного сезона, включая декабрь предыдущего года."""
+    if day.month <= 2:
+        return date(day.year - 1, 12, 1)
+    return date(day.year, day.month // 3 * 3, 1)
+
+
+def season_end(start: date) -> date:
+    """Исключительная граница сезона."""
+    if start.month == 12:
+        return date(start.year + 1, 3, 1)
+    return date(start.year, start.month + 3, 1)
+
+
+def season_title(start: date) -> str:
+    if start.month == 12:
+        return f"Зима {start.year}/{(start.year + 1) % 100:02d}"
+    names = {3: "Весна", 6: "Лето", 9: "Осень"}
+    return f"{names[start.month]} {start.year}"
+
+
+def available_retrospective_seasons(dates: list[date], today: date) -> list[date]:
+    """Сезоны, в которых уже есть хотя бы одна завершённая тренировка."""
+    return sorted({season_start(day) for day in dates if day <= today})
+
+
 def all_time_bests(sessions: list) -> tuple[
     tuple[date, int], tuple[date, int], tuple[date, float, int] | None
 ] | None:
