@@ -884,9 +884,16 @@ def analytics_kb(year: int, month: int,
     return kb.as_markup()
 
 
-def analytics_best_kb(year: int, month: int) -> InlineKeyboardMarkup:
+def analytics_best_kb(year: int, month: int,
+                      record_session_id: int | None = None) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="📅 К аналитике", callback_data=f"an_month:{year}:{month}")
+    kb.button(text="📅 Назад к аналитике", callback_data=f"an_month:{year}:{month}")
+    if record_session_id is not None:
+        kb.button(
+            text="🏋️ Рекордная тренировка",
+            callback_data=f"hist_view:{record_session_id}:0:0:an_best:{year}:{month}",
+        )
+    kb.adjust(2)
     return kb.as_markup()
 
 

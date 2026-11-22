@@ -1,6 +1,6 @@
 """Хэндлеры раздела «📅 Аналитика» (C2.5)."""
 import asyncio
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from aiogram import Router, F
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
@@ -29,6 +29,10 @@ router = Router()
 
 WEEK_LABELS = ["1–7", "8–14", "15–21", "22–28", "29–31"]
 MEDALS = ["🥇", "🥈", "🥉"]
+MONTH_NAMES_GENITIVE = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
 
 
 def _month_bounds(year: int, month: int) -> tuple[datetime, datetime]:
@@ -210,6 +214,30 @@ async def cb_analytics_chart(callback: CallbackQuery, session: AsyncSession):
     await callback.answer()
 
 
+def _format_week(monday: date) -> str:
+    sunday = monday + timedelta(days=6)
+    end = f"{sunday.day} {MONTH_NAMES_GENITIVE[sunday.month - 1]} {sunday.year}"
+    if monday.year == sunday.year and monday.month == sunday.month:
+        return f"{monday.day}–{end}"
+
+    start = f"{monday.day} {MONTH_NAMES_GENITIVE[monday.month - 1]}"
+    if monday.year != sunday.year:
+        start += f" {monday.year}"
+    return f"{start} – {end}"
+
+
+def _format_workout_count(count: int) -> str:
+    if 11 <= count % 100 <= 14:
+        word = "тренировок"
+    elif count % 10 == 1:
+        word = "тренировка"
+    elif 2 <= count % 10 <= 4:
+        word = "тренировки"
+    else:
+        word = "тренировок"
+    return f"<b>{count} {word}</b>"
+
+
 @router.callback_query(F.data.startswith("an_best:"))
 async def cb_analytics_best(callback: CallbackQuery, session: AsyncSession):
     _, year, month = callback.data.split(":")
@@ -218,27 +246,33 @@ async def cb_analytics_best(callback: CallbackQuery, session: AsyncSession):
         return await callback.answer("Сначала /start", show_alert=True)
 
     records = all_time_bests(await get_finished_sessions_with_sets(session, user.id))
-    lines = ["🏅 <b>Лучшее за всё время</b>", ""]
+    lines = ["🏅 <b>Лучшее за всё время</b>"]
+    record_session_id = None
     if records is None:
-        lines.append("Пока нет завершённых тренировок.")
+        lines.extend(["", "Пока нет завершённых тренировок."])
     else:
+        lines.extend(["Только завершённые тренировки", "⎯" * 19, ""])
         (month_start, month_count), (monday, week_count), tonnage = records
-        sunday = monday + timedelta(days=6)
         month_title = f"{MONTH_NAMES[month_start.month - 1]} {month_start.year}"
-        week_title = f"{monday:%d.%m.%Y} – {sunday:%d.%m.%Y}"
         lines.extend([
-            f"📅 Лучший месяц: {month_title} · тренировок: <b>{month_count}</b>",
-            f"🗓 Лучшая неделя: {week_title} · тренировок: <b>{week_count}</b>",
+            "📅 <b>Лучший месяц</b>",
+            f"{month_title} · {_format_workout_count(month_count)}",
+            "",
+            "🗓 <b>Лучшая неделя</b>",
+            f"{_format_week(monday)} · {_format_workout_count(week_count)}",
+            "",
+            "🚚 <b>Рекордный тоннаж</b>",
         ])
         if tonnage is None:
-            lines.append("🚚 Рекордный тоннаж: пока нет результатов в кг.")
+            lines.append("Пока нет результатов в кг.")
         else:
-            day, kilograms = tonnage
+            day, kilograms, record_session_id = tonnage
             weight = f"{kilograms:,.0f}".replace(",", " ")
-            lines.append(f"🚚 Рекордный тоннаж: <b>{weight} кг</b> · {day:%d.%m.%Y}")
+            lines.append(f"<b>{weight} кг</b> · {day:%d.%m.%Y}")
 
     await callback.message.edit_text(
-        "\n".join(lines), reply_markup=analytics_best_kb(int(year), int(month)),
+        "\n".join(lines),
+        reply_markup=analytics_best_kb(int(year), int(month), record_session_id),
     )
     await callback.answer()
 

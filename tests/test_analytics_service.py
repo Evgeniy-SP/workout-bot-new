@@ -36,7 +36,7 @@ def test_all_time_bests_uses_msk_and_calendar_weeks_across_months():
             make_set(weight="120", reps=10, completed=False),
         ]),
         make_session(1, [make_set(weight="50", reps=10)]),
-        SimpleNamespace(started_at=datetime(2026, 10, 30, 22, tzinfo=UTC),
+        SimpleNamespace(id=3, started_at=datetime(2026, 10, 30, 22, tzinfo=UTC),
                         sets=[make_set(weight="50", reps=10)]),
         SimpleNamespace(started_at=datetime(2026, 10, 31, 12, tzinfo=UTC), sets=[]),
     ]
@@ -44,7 +44,7 @@ def test_all_time_bests_uses_msk_and_calendar_weeks_across_months():
     assert all_time_bests(sessions) == (
         (date(2026, 10, 1), 2),
         (date(2026, 10, 26), 3),
-        (date(2026, 10, 31), 500.0),
+        (date(2026, 10, 31), 500.0, 3),
     )
 
 

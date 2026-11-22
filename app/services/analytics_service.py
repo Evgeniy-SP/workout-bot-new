@@ -63,9 +63,9 @@ def month_activity(sets: list) -> tuple[int, int]:
 
 
 def all_time_bests(sessions: list) -> tuple[
-    tuple[date, int], tuple[date, int], tuple[date, float] | None
+    tuple[date, int], tuple[date, int], tuple[date, float, int] | None
 ] | None:
-    """Рекорды по завершённым сессиям: месяц, неделя и тоннаж за тренировку."""
+    """Рекорды по завершённым сессиям: месяц, неделя и (дата, тоннаж, ID)."""
     months: Counter[date] = Counter()
     weeks: Counter[date] = Counter()
     best_tonnage = None
@@ -79,7 +79,7 @@ def all_time_bests(sessions: list) -> tuple[
 
         tonnage = strict_tonnage(session.sets)
         if tonnage > 0:
-            candidate = (-tonnage, started)
+            candidate = (-tonnage, started, session.id)
             if best_tonnage is None or candidate < best_tonnage:
                 best_tonnage = candidate
 
@@ -87,9 +87,10 @@ def all_time_bests(sessions: list) -> tuple[
         return None
     best_month = min(months.items(), key=lambda item: (-item[1], item[0]))
     best_week = min(weeks.items(), key=lambda item: (-item[1], item[0]))
-    tonnage_record = (
-        (best_tonnage[1].date(), -best_tonnage[0]) if best_tonnage else None
-    )
+    tonnage_record = None
+    if best_tonnage is not None:
+        negative_tonnage, started_at, session_id = best_tonnage
+        tonnage_record = (started_at.date(), -negative_tonnage, session_id)
     return best_month, best_week, tonnage_record
 
 

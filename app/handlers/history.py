@@ -151,12 +151,15 @@ async def cb_history_view(callback: CallbackQuery, session: AsyncSession):
     session_id = int(parts[1])
     page = int(parts[2])
     wt_id = int(parts[3]) if len(parts) > 3 else 0  # старые кнопки — без wt
-    # «Адрес возврата»: если провалились сюда из архива заметок, кнопка
-    # «Назад» ведёт в заметки, а не в историю (например, «notes_ex:7:0»)
+    # «Адрес возврата» для входа из архива заметок или доски рекордов.
     origin = ":".join(parts[4:]) if len(parts) > 4 else ""
 
+    user = await get_user(session, callback.from_user.id)
+    if not user:
+        return await callback.answer("Сначала /start", show_alert=True)
+
     ws = await get_session_details(session, session_id)
-    if not ws:
+    if not ws or ws.user_id != user.id:
         return await callback.answer("Тренировка не найдена", show_alert=True)
 
     text = render_history_details(ws)
@@ -179,7 +182,9 @@ async def cb_history_view(callback: CallbackQuery, session: AsyncSession):
     kb.button(text="📤 Экспорт тренировки (CSV)",
               callback_data=f"exp_sess:{session_id}")
 
-    if origin:
+    if origin.startswith("an_best:"):
+        kb.button(text="⬅️ К лучшему", callback_data=origin)
+    elif origin:
         kb.button(text="⬅️ Назад к заметкам", callback_data=origin)
     else:
         kb.button(text="⬅️ Назад к истории",
