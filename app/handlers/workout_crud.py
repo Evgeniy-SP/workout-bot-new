@@ -1,4 +1,6 @@
 """Хэндлеры для удаления, архивации и настройки тренировок/упражнений."""
+from datetime import datetime
+
 from aiogram import Router, F
 from aiogram.types import CallbackQuery
 from sqlalchemy import delete, func, select
@@ -13,8 +15,10 @@ from app.keyboards.workout_kb import (
     exercises_list_kb, workouts_list_kb,
 )
 from app.render import render_exercise_card
+from app.services.achievement_service import close_monthly_challenges
 from app.services.training_service import get_user, \
     load_workout_with_exercises, load_workout
+from app.utils import MSK
 
 router = Router()
 
@@ -158,6 +162,8 @@ async def cb_workout_delete_confirm(callback: CallbackQuery,
     if not wt or wt.user_id != user.id:
         return await callback.answer("Не найдено", show_alert=True)
 
+    today = datetime.now(MSK).date()
+    await close_monthly_challenges(session, user.id, today)
     result = await session.execute(
         select(Exercise.id).where(Exercise.workout_type_id == wt_id))
     ex_ids = list(result.scalars())
@@ -172,6 +178,7 @@ async def cb_workout_delete_confirm(callback: CallbackQuery,
         delete(WorkoutSession).where(WorkoutSession.workout_type_id == wt_id))
     await session.delete(wt)
     await session.commit()
+    await close_monthly_challenges(session, user.id, today)
 
     workouts, new_ids = await _get_sorted_workouts(session, user.id)
 
@@ -229,6 +236,7 @@ async def cb_workout_archive(callback: CallbackQuery, session: AsyncSession):
     if active_session:
         await session.delete(active_session)
         await session.commit()
+        await close_monthly_challenges(session, user.id, datetime.now(MSK).date())
 
     workouts, new_ids = await _get_sorted_workouts(session, user.id)
 

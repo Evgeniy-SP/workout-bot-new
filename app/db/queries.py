@@ -3,13 +3,14 @@
 Вынесены отдельно от handlers/, чтобы не засорять логику.
 """
 from collections import defaultdict
+from datetime import date
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
-    Exercise, SessionExerciseNote, SessionSet, SessionSkippedExercise,
+    Exercise, MonthlyChallengeResult, SessionExerciseNote, SessionSet, SessionSkippedExercise,
     WorkoutSession, WorkoutType,
 )
 from app.utils import to_msk
@@ -563,6 +564,27 @@ async def add_achievement(session: AsyncSession,
         session.add(Achievement(user_id=user_id, code=code))
     await session.commit()
     return True
+
+
+async def get_challenge_archive_months(session: AsyncSession, user_id: int) -> list[date]:
+    result = await session.scalars(
+        select(MonthlyChallengeResult.period_start)
+        .where(MonthlyChallengeResult.user_id == user_id)
+        .distinct().order_by(MonthlyChallengeResult.period_start),
+    )
+    return list(result)
+
+
+async def get_challenge_archive_results(
+    session: AsyncSession, user_id: int, period_start: date,
+) -> list[MonthlyChallengeResult]:
+    result = await session.scalars(
+        select(MonthlyChallengeResult).where(
+            MonthlyChallengeResult.user_id == user_id,
+            MonthlyChallengeResult.period_start == period_start,
+        ).order_by(MonthlyChallengeResult.goal_key),
+    )
+    return list(result)
 
 
 # ─── CSV-экспорт (C2.6 Блок 4) ────────────────────────────────────

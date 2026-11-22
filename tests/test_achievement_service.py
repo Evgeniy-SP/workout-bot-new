@@ -2,6 +2,7 @@
 
 По образцу test_pr_service.py: SessionSet/WorkoutSession/Exercise
 создаются как plain-объекты, без БД."""
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 from app.db.models import Exercise, SessionSet, WorkoutSession
@@ -271,9 +272,9 @@ def test_december_challenge_screen_before_during_and_after_period():
     code = "monthly_12_2026_12"
     dates = [date(2026, 12, 1)] * 12
 
-    def render(today, codes=(), archive=False):
+    def render(today, codes=()):
         return "\n".join(ach.render_seasonal_challenges(
-            codes=set(codes), session_dates=dates, all_sets=[], today=today, archive=archive,
+            codes=set(codes), session_dates=dates, all_sets=[], today=today,
         ))
 
     upcoming = render(date(2026, 11, 30))
@@ -286,10 +287,33 @@ def test_december_challenge_screen_before_during_and_after_period():
     assert "<b>0/12</b>" in render(date(2026, 11, 30))
     assert "✅ Цель выполнена" in render(date(2026, 12, 31), {code})
     assert "Декабрь 2026" not in render(date(2027, 1, 1), {code})
-    assert "Цель не выполнена" in render(date(2027, 1, 1), archive=True)
-    assert "✅ Цель выполнена" in render(date(2027, 1, 1), {code}, archive=True)
-    assert "<b>12/12</b>" in render(date(2027, 1, 1), {code}, archive=True)
+    january = render(date(2027, 1, 1), {code})
+    assert "Январь 2027" in january
+    assert "<b>0/12</b>" in january and "<b>0/3</b>" in january
+    assert "✅ Цель выполнена" not in january
     assert "Декабрь 2026" in ach.build_achievements_message([(code, "")])
+    assert "Январь 2027" in ach.build_achievements_message([("pr_exercises_3_2027_01", "")])
+
+
+def test_monthly_goal_overrides_can_change_type_and_threshold(monkeypatch):
+    february = date(2027, 2, 1)
+    workouts = replace(ach.DEFAULT_MONTHLY_GOALS[0], target=10)
+    cardio = ach.MonthlyGoal(
+        "cardio", 3600, "секунд кардио", "{target} секунд кардио",
+        lambda dates, sets, start, end: (900, []),
+    )
+    monkeypatch.setitem(ach.MONTHLY_GOAL_OVERRIDES, february, (workouts, cardio))
+
+    assert [challenge.code for challenge in ach.monthly_challenges(february)] == [
+        "monthly_10_2027_02", "cardio_3600_2027_02",
+    ]
+    screen = "\n".join(ach.render_seasonal_challenges(
+        codes=set(), session_dates=[february], all_sets=[], today=february,
+    ))
+    assert "<b>1/10</b> завершённых тренировок" in screen
+    assert "<b>900/3600</b> секунд кардио" in screen
+    assert "разных упр. с личным рекордом" not in screen
+    assert ach.monthly_challenges(date(2027, 1, 1))[0].goal.target == 12
 
 
 def test_seasonal_pr_progress_uses_distinct_exercises_and_earlier_history():
@@ -328,13 +352,13 @@ def test_seasonal_pr_progress_uses_distinct_exercises_and_earlier_history():
     extra_sets.append(_s(8, "12 блоков", next_session, name="Жим <гантели>"))
     for workout_set in extra_sets:
         workout_set.completed = True
-    archive = "\n".join(ach.render_seasonal_challenges(
+    updated = "\n".join(ach.render_seasonal_challenges(
         codes={"pr_exercises_3_2026_12"}, session_dates=[],
-        all_sets=sets + extra_sets, today=date(2027, 1, 1), archive=True,
+        all_sets=sets + extra_sets, today=date(2026, 12, 31),
     ))
-    assert "<b>4/3</b> разных упр. с личным рекордом" in archive
-    assert "В зачёте:\n• Жим &lt;гантели&gt; — <b>12 блоков × 8</b>" in archive
-    assert "• Присед — <b>60 кг × 8</b>\nЕщё 1" in archive
+    assert "<b>4/3</b> разных упр. с личным рекордом" in updated
+    assert "В зачёте:\n• Жим &lt;гантели&gt; — <b>12 блоков × 8</b>" in updated
+    assert "• Присед — <b>60 кг × 8</b>\nЕщё 1" in updated
 
 
 def test_screen_shows_progress_and_unlocked():

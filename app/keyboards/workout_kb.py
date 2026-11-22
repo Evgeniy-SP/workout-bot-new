@@ -1,4 +1,6 @@
 """Фабрики inline-клавиатур."""
+from datetime import date
+
 from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup, \
     InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
@@ -939,6 +941,7 @@ def analytics_best_kb(year: int, month: int,
 
 def achievements_kb(back_ym: tuple[int, int] | None, *,
                     has_archive: bool = False, archive: bool = False,
+                    previous: date | None = None, following: date | None = None,
                     ) -> InlineKeyboardMarkup:
     """Клавиатура экрана «🏆 Ачивки».
 
@@ -948,15 +951,26 @@ def achievements_kb(back_ym: tuple[int, int] | None, *,
     kb = InlineKeyboardBuilder()
     origin = f":{back_ym[0]}:{back_ym[1]}" if back_ym else ""
     if archive:
-        kb.button(text="⬅️ К достижениям", callback_data=f"an_ach_refresh{origin}")
+        archive_origin = origin or ":0:0"
+        navigation = []
+        for period, arrow in ((previous, "←"), (following, "→")):
+            if period is not None:
+                navigation.append(InlineKeyboardButton(
+                    text=f"{arrow} {MONTH_NAMES[period.month - 1]} {period.year}",
+                    callback_data=f"an_ach_archive{archive_origin}:{period:%Y%m}",
+                ))
+        if navigation:
+            kb.row(*navigation)
+        kb.row(InlineKeyboardButton(text="⬅️ К достижениям",
+                                    callback_data=f"an_ach_refresh{origin}"))
     else:
-        kb.button(text="🔄 Обновить", callback_data=f"an_ach_refresh{origin}")
+        kb.row(InlineKeyboardButton(text="🔄 Обновить", callback_data=f"an_ach_refresh{origin}"))
         if has_archive:
-            kb.button(text="📦 Архив сезонных", callback_data=f"an_ach_archive{origin}")
+            kb.row(InlineKeyboardButton(text="📦 Архив челленджей",
+                                        callback_data=f"an_ach_archive{origin}"))
     if back_ym:
         y, m = back_ym
-        kb.button(text="📅 К аналитике", callback_data=f"an_month:{y}:{m}")
-    kb.adjust(1)
+        kb.row(InlineKeyboardButton(text="📅 К аналитике", callback_data=f"an_month:{y}:{m}"))
     return kb.as_markup()
 
 

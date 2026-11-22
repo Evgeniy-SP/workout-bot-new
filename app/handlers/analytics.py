@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.queries import (
     add_achievement, count_exercises_with_history, count_finished_sessions,
-    get_all_completed_sets, get_finished_session_dates,
+    get_all_completed_sets, get_challenge_archive_months,
+    get_challenge_archive_results, get_finished_session_dates,
     get_finished_sessions_with_sets,
     get_months_with_sessions, get_sessions_in_range,
     get_user_achievement_codes,
@@ -386,7 +387,7 @@ async def cb_achievements(callback: CallbackQuery, session: AsyncSession):
     бы замком до следующей тренировки.
     """
     parts = callback.data.split(":")
-    back_ym = (int(parts[1]), int(parts[2])) if len(parts) >= 3 else None
+    back_ym = (int(parts[1]), int(parts[2])) if len(parts) >= 3 and parts[1] != "0" else None
     archive = parts[0] == "an_ach_archive"
 
     user = await get_user(session, callback.from_user.id)
@@ -394,17 +395,25 @@ async def cb_achievements(callback: CallbackQuery, session: AsyncSession):
         return await callback.answer("Сначала /start", show_alert=True)
 
     today = datetime.now(MSK).date()
-    added = await ach.unlock_achievements(session, user.id, today=today)
-
-    codes = await get_user_achievement_codes(session, user.id)
-    session_dates = await get_finished_session_dates(session, user.id)
-    all_sets = await get_all_completed_sets(session, user.id)
     if archive:
-        text = "\n".join(ach.render_seasonal_challenges(
-            codes=codes, session_dates=session_dates, all_sets=all_sets,
-            today=today, archive=True,
-        ))
+        await ach.close_monthly_challenges(session, user.id, today)
+        periods = await get_challenge_archive_months(session, user.id)
+        results = []
+        previous = following = None
+        if periods:
+            requested = parts[3] if len(parts) > 3 else ""
+            period = next((month for month in periods if f"{month:%Y%m}" == requested), periods[-1])
+            index = periods.index(period)
+            previous = periods[index - 1] if index else None
+            following = periods[index + 1] if index + 1 < len(periods) else None
+            results = await get_challenge_archive_results(session, user.id, period)
+        text = ach.render_challenge_archive(results)
+        keyboard = achievements_kb(back_ym, archive=True, previous=previous, following=following)
     else:
+        added = await ach.unlock_achievements(session, user.id, today=today)
+        codes = await get_user_achievement_codes(session, user.id)
+        session_dates = await get_finished_session_dates(session, user.id)
+        all_sets = await get_all_completed_sets(session, user.id)
         text = ach.render_achievements_screen(
             codes=codes,
             session_dates=session_dates,
@@ -416,14 +425,12 @@ async def cb_achievements(callback: CallbackQuery, session: AsyncSession):
             today=today,
             all_sets=all_sets,
         )
-    if added:
-        text += (f"\n\n🎁 <i>Зачтено за прошлые заслуги: "
-                 f"{len(added)} шт. — поздравляю!</i>")
+        if added:
+            text += (f"\n\n🎁 <i>Зачтено за прошлые заслуги: "
+                     f"{len(added)} шт. — поздравляю!</i>")
+        keyboard = achievements_kb(back_ym, has_archive=ach.has_seasonal_archive(today))
     try:
-        await callback.message.edit_text(
-            text, reply_markup=achievements_kb(
-                back_ym, has_archive=ach.has_seasonal_archive(today), archive=archive,
-            ))
+        await callback.message.edit_text(text, reply_markup=keyboard)
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise

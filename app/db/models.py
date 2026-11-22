@@ -1,9 +1,12 @@
 """Модели БД — описание всех таблиц."""
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum
+from typing import Any
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text,
+    BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer,
+    JSON, Numeric, String, Text,
     UniqueConstraint, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -166,4 +169,30 @@ class Achievement(Base):
     code: Mapped[str] = mapped_column(String(32))
     unlocked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MonthlyChallengeResult(Base):
+    """Сохранённый итог одной цели за месяц со значениями на момент закрытия."""
+
+    __tablename__ = "monthly_challenge_results"
+    __table_args__ = (
+        CheckConstraint("actual_value >= 0", name="ck_monthly_results_actual_value"),
+        CheckConstraint("target_value > 0", name="ck_monthly_results_target_value"),
+    )
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    # Первый день месяца по МСК.
+    period_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    goal_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    goal_title: Mapped[str] = mapped_column(String(128))
+    metric_unit: Mapped[str] = mapped_column(String(32))
+    target_value: Mapped[Decimal] = mapped_column(Numeric(18, 3))
+    actual_value: Mapped[Decimal] = mapped_column(Numeric(18, 3))
+    goal_met: Mapped[bool] = mapped_column(Boolean)
+    details: Mapped[dict[str, Any]] = mapped_column(JSON)
+    closed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
     )

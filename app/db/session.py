@@ -1,8 +1,9 @@
 """Подключение к PostgreSQL."""
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
-from app.db.base import Base
+from app.db.models import MonthlyChallengeResult
 
 engine = create_async_engine(
     settings.database_url,
@@ -16,7 +17,14 @@ async_session_maker = async_sessionmaker(
 )
 
 
-async def init_db() -> None:
-    """Создать таблицы, если их нет (для разработки)."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def ensure_db_schema() -> None:
+    """Проверить, что к базе бота применена миграция архива."""
+    async with engine.connect() as conn:
+        has_archive = await conn.run_sync(
+            lambda sync_conn: inspect(sync_conn).has_table(MonthlyChallengeResult.__tablename__),
+        )
+    if not has_archive:
+        raise RuntimeError(
+            "В базе бота нет таблицы monthly_challenge_results. "
+            "Проверь адрес базы и примени миграции Alembic перед запуском."
+        )

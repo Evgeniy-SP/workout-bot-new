@@ -9,8 +9,13 @@ from sqlalchemy.exc import IntegrityError
 from app.db.models import (
     Exercise, SessionSet, User, WorkoutSession, WorkoutType,
 )
-from app.db.queries import add_achievement, get_user_achievement_codes
-from app.services.achievement_service import unlock_achievements
+from app.db.queries import (
+    add_achievement, get_challenge_archive_months, get_challenge_archive_results,
+    get_user_achievement_codes,
+)
+from app.services.achievement_service import (
+    close_monthly_challenges, render_challenge_archive, unlock_achievements,
+)
 
 
 async def _make_user(session) -> User:
@@ -80,51 +85,69 @@ async def test_unlock_achievements_first_workout(session):
                            completed=True))
     await session.commit()
 
-    new = await unlock_achievements(session, user.id)
+    today = date(2026, 11, 19)
+    new = await unlock_achievements(session, user.id, today=today)
     assert [c for c, _ in new] == ["pr_first"]
     # повторный вызов ничего не выдаёт (все условия уже записаны)
-    assert await unlock_achievements(session, user.id) == []
+    assert await unlock_achievements(session, user.id, today=today) == []
     assert await get_user_achievement_codes(session, user.id) == {"pr_first"}
 
 
 @pytest.mark.asyncio
 async def test_december_challenge_counts_finished_sessions_in_msk_and_awards_once(session):
     user = await _make_user(session)
+    user.created_at = datetime(2026, 11, 1, tzinfo=timezone.utc)
     workout_type = WorkoutType(user_id=user.id, name="Тест", sort_order=0)
     session.add(workout_type)
     await session.flush()
 
     start = datetime(2026, 11, 30, 21, tzinfo=timezone.utc)
     end = datetime(2026, 12, 31, 21, tzinfo=timezone.utc)
-    session.add_all([
-        WorkoutSession(user_id=user.id, workout_type_id=workout_type.id,
-                       started_at=start, finished_at=start)
-        for _ in range(11)
-    ])
+    history = [WorkoutSession(user_id=user.id, workout_type_id=workout_type.id,
+                              started_at=start, finished_at=start) for _ in range(11)]
+    session.add_all(history)
+    overnight = WorkoutSession(
+        user_id=user.id, workout_type_id=workout_type.id,
+        started_at=datetime(2026, 12, 31, 20, 50, tzinfo=timezone.utc),
+    )
     session.add_all([
         WorkoutSession(user_id=user.id, workout_type_id=workout_type.id,
                        started_at=end, finished_at=end),
-        WorkoutSession(user_id=user.id, workout_type_id=workout_type.id,
-                       started_at=start),
+        overnight,
     ])
     await session.commit()
 
     code = "monthly_12_2026_12"
     today = date(2027, 1, 1)
     assert (code, "") not in await unlock_achievements(session, user.id, today=today)
+    assert await get_challenge_archive_months(session, user.id) == []
 
-    session.add(WorkoutSession(user_id=user.id, workout_type_id=workout_type.id,
-                               started_at=start, finished_at=start))
+    overnight.finished_at = datetime(2026, 12, 31, 21, 40, tzinfo=timezone.utc)
     await session.commit()
     assert (code, "") in await unlock_achievements(session, user.id, today=today)
     assert await unlock_achievements(session, user.id, today=today) == []
     assert code in await get_user_achievement_codes(session, user.id)
     assert not await add_achievement(session, user.id, code, skip_existing=True)
 
+    saved = await get_challenge_archive_results(session, user.id, date(2026, 12, 1))
+    assert [(row.actual_value, row.goal_met) for row in saved] == [(12, True), (0, False)]
+    archived_text = render_challenge_archive(saved)
+    assert "Декабрь 2026" in archived_text
+    assert "<b>12/12</b> завершённых тренировок · ✅ Цель выполнена" in archived_text
+    assert "<b>0/3</b> разных упр. с личным рекордом · Цель не выполнена" in archived_text
+    await session.delete(history[0])
+    await session.commit()
+    assert await close_monthly_challenges(session, user.id, date(2027, 2, 1)) == []
+    saved = await get_challenge_archive_results(session, user.id, date(2026, 12, 1))
+    assert render_challenge_archive(saved) == archived_text
+    january = await get_challenge_archive_results(session, user.id, date(2027, 1, 1))
+    assert [(row.actual_value, row.goal_met) for row in january] == [(1, False), (0, False)]
+
 
 @pytest.mark.asyncio
 async def test_december_pr_challenge_awards_at_third_distinct_exercise(session):
     user = await _make_user(session)
+    user.created_at = datetime(2026, 11, 1, tzinfo=timezone.utc)
     workout_type = WorkoutType(user_id=user.id, name="Тест", sort_order=0)
     session.add(workout_type)
     await session.flush()
@@ -153,3 +176,11 @@ async def test_december_pr_challenge_awards_at_third_distinct_exercise(session):
     assert reward in await unlock_achievements(session, user.id, today=today)
     assert "pr_exercises_3_2026_12" in await get_user_achievement_codes(session, user.id)
     assert await unlock_achievements(session, user.id, today=today) == []
+    assert await close_monthly_challenges(session, user.id, date(2027, 1, 1)) == []
+    saved = await get_challenge_archive_results(session, user.id, date(2026, 12, 1))
+    assert [(row.goal_key, row.actual_value) for row in saved] == [
+        ("monthly", 1), ("pr_exercises", 3),
+    ]
+    records = saved[1].details["exercises"]
+    assert [record["name"] for record in records] == ["Жим", "Присед", "Тяга"]
+    assert "• Тяга — <b>100 кг × 8</b>" in render_challenge_archive(saved)
