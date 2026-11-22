@@ -3,6 +3,7 @@ import asyncio
 from datetime import date, datetime, timedelta
 
 from aiogram import Router, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -283,7 +284,7 @@ async def cb_analytics_best(callback: CallbackQuery, session: AsyncSession):
 @router.callback_query(F.data.startswith("an_ach"))
 async def cb_achievements(callback: CallbackQuery, session: AsyncSession):
     """Экран достижений. an_ach:{year}:{month} — с кнопкой «К аналитике»
-    за текущий месяц; an_ach_refresh — просто обновить.
+    за исходный месяц. Обновление и архив сохраняют этот месяц.
 
     При открытии молча выдаёт ачивки за прошлые заслуги (история
     появилась раньше этой фичи) — иначе завоёванное «до» висело
@@ -291,33 +292,44 @@ async def cb_achievements(callback: CallbackQuery, session: AsyncSession):
     """
     parts = callback.data.split(":")
     back_ym = (int(parts[1]), int(parts[2])) if len(parts) >= 3 else None
+    archive = parts[0] == "an_ach_archive"
 
     user = await get_user(session, callback.from_user.id)
     if not user:
         return await callback.answer("Сначала /start", show_alert=True)
 
-    added = await ach.unlock_achievements(session, user.id)
+    today = datetime.now(MSK).date()
+    added = await ach.unlock_achievements(session, user.id, today=today)
 
     codes = await get_user_achievement_codes(session, user.id)
     session_dates = await get_finished_session_dates(session, user.id)
     all_sets = await get_all_completed_sets(session, user.id)
-
-    text = ach.render_achievements_screen(
-        codes=codes,
-        session_dates=session_dates,
-        workouts_count=await count_finished_sessions(session, user.id),
-        exercises_count=await count_exercises_with_history(session, user.id),
-        pr_total=ach.count_pr_events(all_sets),
-        weight_gain_names=list(
-            ach.weight_gain_achievements(all_sets).values()),
-        today=datetime.now(MSK).date(),
-    )
+    if archive:
+        text = "\n".join(ach.render_seasonal_challenges(
+            codes=codes, session_dates=session_dates, all_sets=all_sets,
+            today=today, archive=True,
+        ))
+    else:
+        text = ach.render_achievements_screen(
+            codes=codes,
+            session_dates=session_dates,
+            workouts_count=await count_finished_sessions(session, user.id),
+            exercises_count=await count_exercises_with_history(session, user.id),
+            pr_total=ach.count_pr_events(all_sets),
+            weight_gain_names=list(
+                ach.weight_gain_achievements(all_sets).values()),
+            today=today,
+            all_sets=all_sets,
+        )
     if added:
         text += (f"\n\n🎁 <i>Зачтено за прошлые заслуги: "
                  f"{len(added)} шт. — поздравляю!</i>")
     try:
         await callback.message.edit_text(
-            text, reply_markup=achievements_kb(back_ym))
-    except Exception:
-        pass  # текст не изменился (повторное «🔄 Обновить») — не падаем
+            text, reply_markup=achievements_kb(
+                back_ym, has_archive=ach.has_seasonal_archive(today), archive=archive,
+            ))
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
     await callback.answer()

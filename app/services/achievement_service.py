@@ -23,13 +23,15 @@
   одноразовая, но на экране показываем ВСЕ упражнения, выполнившие
   условие (а не только первое).
 """
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from html import escape
 
 from app.services.pr_service import (
     _unit_key, classify_duration_pr, classify_pr, split_weight,
 )
-from app.utils import to_msk
+from app.utils import format_duration, format_weight, to_msk
 
 # Пороги серийных ачивок
 WORKOUT_MILESTONES = [10, 50, 100, 250]
@@ -74,7 +76,7 @@ ACHIEVEMENTS: dict[str, dict] = {
         "desc": "50 разных упражнений в истории"},
     "pr_first": {
         "icon": "🔥", "title": "Первый рекорд",
-        "desc": "ты побил свой прошлый результат"},
+        "desc": "1 личный рекорд"},
     "pr_10": {
         "icon": "⚡️", "title": "10 рекордов",
         "desc": "10 PR за всю историю"},
@@ -96,6 +98,39 @@ ACHIEVEMENT_ORDER = [
     "pr_first", "pr_10", "pr_50", "pr_3_session", "weight_plus_20",
     "exercises_10", "exercises_25", "exercises_50",
 ]
+
+
+@dataclass(frozen=True)
+class SeasonalChallenge:
+    code: str
+    title: str
+    start: date
+    end: date  # первый день после окончания
+    target: int
+    unit: str
+    goal: str
+    by_pr_exercise: bool = False
+
+    def progress(self, session_dates: list[date], all_sets: list,
+                 today: date) -> tuple[int, list[tuple[str, str, str]]]:
+        end = self.end if today >= self.end else today + timedelta(days=1)
+        if end <= self.start:
+            return 0, []
+        if self.by_pr_exercise:
+            exercises = pr_exercises(all_sets, self.start, end)
+            return len(exercises), exercises
+        return sum(self.start <= day < end for day in session_dates), []
+
+
+SEASONAL_CHALLENGES = (
+    SeasonalChallenge("monthly_12_2026_12", "Декабрь 2026",
+                      date(2026, 12, 1), date(2027, 1, 1), 12,
+                      "завершённых тренировок", "12 тренировок за месяц"),
+    SeasonalChallenge("pr_exercises_3_2026_12", "Декабрь 2026",
+                      date(2026, 12, 1), date(2027, 1, 1), 3,
+                      "разных упр. с личным рекордом", "личный рекорд в 3 разных упражнениях",
+                      by_pr_exercise=True),
+)
 
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
@@ -137,6 +172,40 @@ def best_monthly_count(dates: set) -> int:
 # ─── Подсчёт PR за всю историю ────────────────────────────────────
 
 
+def _pr_kind(workout_set, prior: list) -> str | None:
+    weight, _ = split_weight(getattr(workout_set, "weight_kg", None))
+    if getattr(workout_set, "reps", None) and weight is not None:
+        return classify_pr(workout_set, prior)
+    if getattr(workout_set, "duration_seconds", None):
+        return classify_duration_pr(workout_set, prior)
+    return None
+
+
+def pr_exercises(all_sets: list, start: date, end: date) -> list[tuple[str, str, str]]:
+    """Последний PR каждого упражнения, в порядке первого зачёта за период."""
+    prior_by_exercise: dict[tuple, list] = defaultdict(list)
+    records: dict[tuple[str, str], str] = {}
+    for workout_set in sorted(all_sets, key=_sort_key):
+        session = workout_set.session
+        if not session or session.finished_at is None or not workout_set.completed:
+            continue
+        day = _day(workout_set)
+        if day is None:
+            continue
+        if day >= end:
+            break
+        key = _exercise_key(workout_set)
+        prior = prior_by_exercise[key]
+        record_kind = _pr_kind(workout_set, prior) if day >= start else None
+        if record_kind == "duration":
+            records[key] = format_duration(workout_set.duration_seconds)
+        elif record_kind:
+            weight = format_weight(workout_set.weight_kg)
+            records[key] = f"{weight} × {workout_set.reps}"
+        prior.append(workout_set)
+    return [(name, kind, result) for (name, kind), result in records.items()]
+
+
 def count_pr_events(all_sets: list) -> int:
     """Суммарное число PR за всю историю.
 
@@ -148,13 +217,8 @@ def count_pr_events(all_sets: list) -> int:
     """
     total, prior = 0, []
     for s in sorted(all_sets, key=_sort_key):
-        if getattr(s, "reps", None) and \
-                split_weight(getattr(s, "weight_kg", None))[0] is not None:
-            if classify_pr(s, prior):
-                total += 1
-        elif getattr(s, "duration_seconds", None):
-            if classify_duration_pr(s, prior):
-                total += 1
+        if _pr_kind(s, prior):
+            total += 1
         prior.append(s)
     return total
 
@@ -247,7 +311,8 @@ def check_new_achievements(*, codes: set, session_dates,
 
 
 async def unlock_achievements(db_session, user_id: int,
-                              pr_in_session: int = 0) -> list[tuple]:
+                              pr_in_session: int = 0,
+                              *, today: date | None = None) -> list[tuple]:
     """Проверяет условия и записывает НОВЫЕ достижения в БД.
 
     Возвращает [(код, деталь)] только что разблокированных. Используется:
@@ -268,10 +333,12 @@ async def unlock_achievements(db_session, user_id: int,
 
     codes = await get_user_achievement_codes(db_session, user_id)
     all_sets = await get_all_completed_sets(db_session, user_id)
+    session_dates = await get_finished_session_dates(db_session, user_id)
+    today = today or to_msk(datetime.now(timezone.utc)).date()
 
     new = check_new_achievements(
         codes=codes,
-        session_dates=await get_finished_session_dates(db_session, user_id),
+        session_dates=session_dates,
         workouts_count=await count_finished_sessions(db_session, user_id),
         exercises_count=await count_exercises_with_history(db_session,
                                                            user_id),
@@ -279,9 +346,13 @@ async def unlock_achievements(db_session, user_id: int,
         pr_in_session=pr_in_session,
         weight_gain_names=list(weight_gain_achievements(all_sets).values()),
     )
-    for code, _ in new:
-        await add_achievement(db_session, user_id, code)
-    return new
+    for challenge in SEASONAL_CHALLENGES:
+        if challenge.code not in codes:
+            progress, _ = challenge.progress(session_dates, all_sets, today)
+            if progress >= challenge.target:
+                new.append((challenge.code, ""))
+    return [(code, detail) for code, detail in new
+            if await add_achievement(db_session, user_id, code, skip_existing=True)]
 
 
 # ─── Тексты ───────────────────────────────────────────────────────
@@ -302,18 +373,68 @@ def build_achievements_message(new: list[tuple]) -> str:
     в каноническом порядке ACHIEVEMENT_ORDER.
     """
     order = {c: i for i, c in enumerate(ACHIEVEMENT_ORDER)}
+    seasonal = {challenge.code: challenge for challenge in SEASONAL_CHALLENGES}
     lines = ["🏆 <b>Новые достижения!</b>", ""]
     for code, detail in sorted(new, key=lambda x: order.get(x[0], 99)):
+        if code in seasonal:
+            challenge = seasonal[code]
+            lines.append(f"🎯 <b>{challenge.title}</b> — {challenge.goal}")
+            continue
         a = ACHIEVEMENTS[code]
         suffix = f" — {detail}" if detail else ""
         lines.append(f"{a['icon']} <b>{a['title']}</b> — {a['desc']}{suffix}")
     return "\n".join(lines)
 
 
+def has_seasonal_archive(today: date) -> bool:
+    return any(challenge.end <= today for challenge in SEASONAL_CHALLENGES)
+
+
+def render_seasonal_challenges(*, codes: set, session_dates: list[date], all_sets: list,
+                               today: date, archive: bool = False) -> list[str]:
+    title = "📦 <b>Архив сезонных челленджей</b>" if archive else "🎯 <b>Сезонные</b>"
+    periods: dict[tuple[str, date, date], list[str]] = {}
+    for challenge in SEASONAL_CHALLENGES:
+        if (challenge.end <= today) != archive:
+            continue
+        period = (challenge.title, challenge.start, challenge.end)
+        heading = f"<b>{challenge.title}</b>"
+        if today < challenge.start:
+            heading += f" · Старт {challenge.start:%d.%m.%Y}"
+        lines = periods.setdefault(period, [heading])
+        progress, exercises = challenge.progress(session_dates, all_sets, today)
+        if challenge.code in codes:
+            status = " · ✅ Цель выполнена"
+        elif archive:
+            status = " · Цель не выполнена"
+        else:
+            status = ""
+        lines.append(f"<b>{progress}/{challenge.target}</b> {challenge.unit}{status}")
+        if exercises:
+            shown = exercises[:challenge.target]
+            counts = Counter(name for name, _, _ in shown)
+            lines.append("В зачёте:")
+            for name, kind, result in shown:
+                if counts[name] > 1:
+                    name += " (кардио)" if kind == "cardio" else " (силовое)"
+                lines.append(f"• {escape(name)} — <b>{escape(result)}</b>")
+            if progress > len(shown):
+                lines.append(f"Ещё {progress - len(shown)}")
+    if not periods:
+        return [title, "Архив пока пуст." if archive else "Сейчас нет активных челленджей."]
+
+    result = [title]
+    for lines in periods.values():
+        if len(result) > 1:
+            result.append("")
+        result.extend(lines)
+    return result
+
+
 def render_achievements_screen(*, codes: set, session_dates: list,
                                workouts_count: int, exercises_count: int,
                                pr_total: int, weight_gain_names: list,
-                               today) -> str:
+                               today, all_sets: list) -> str:
     """Экран «🏆 Ачивки»: разблокированные ✅ и замки 🔒 с прогрессом."""
     best_month = best_monthly_count(set(session_dates))
     known = set(ACHIEVEMENT_ORDER)
@@ -322,26 +443,28 @@ def render_achievements_screen(*, codes: set, session_dates: list,
     def line(code, current=None, target=None, unit="", detail=""):
         a = ACHIEVEMENTS[code]
         if code in codes:
-            extra = f" · {current}{unit}" if current is not None else ""
-            if detail:
-                extra += f" · {detail}"
-            return f"✅ {a['icon']} {a['title']}{extra}"
+            extra = f" · {escape(detail)}" if detail else ""
+            return f"✅ {a['icon']} <b>{a['title']}</b> — {a['desc']}{extra}"
         if current is not None and target is not None:
             cur = min(current, target)
             return f"🔒 {a['icon']} {a['title']} — {cur}/{target}{unit}"
-        return f"🔒 {a['icon']} {a['title']}"
+        return f"🔒 {a['icon']} {a['title']} — {a['desc']}"
 
     lines = [
         f"🏆 <b>Достижения — {unlocked} из {len(ACHIEVEMENT_ORDER)}</b>",
         "<i>Разблокируются автоматически при завершении тренировки.</i>",
+        "",
+        *render_seasonal_challenges(
+            codes=codes, session_dates=session_dates, all_sets=all_sets, today=today,
+        ),
         "",
         "💪 <b>Регулярность</b>",
         line("workouts_10", workouts_count, 10),
         line("workouts_50", workouts_count, 50),
         line("workouts_100", workouts_count, 100),
         line("workouts_250", workouts_count, 250),
-        line("monthly_12", best_month if best_month else None, 12),
-        line("monthly_20", best_month if best_month else None, 20),
+        line("monthly_12", best_month, 12, " тренировок за месяц"),
+        line("monthly_20", best_month, 20, " тренировок за месяц"),
         "",
         "🏋️ <b>Рекорды</b>",
         line("pr_first", pr_total if pr_total else None, 1),

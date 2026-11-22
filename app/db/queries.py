@@ -5,6 +5,7 @@
 from collections import defaultdict
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -542,15 +543,26 @@ async def get_user_achievement_codes(session: AsyncSession,
 
 
 async def add_achievement(session: AsyncSession,
-                          user_id: int, code: str) -> None:
+                          user_id: int, code: str, *,
+                          skip_existing: bool = False) -> bool:
     """Записывает полученную ачивку.
 
     UNIQUE(user_id, code) страхует от дублей при повторных проверках.
     """
     from app.db.models import Achievement
 
-    session.add(Achievement(user_id=user_id, code=code))
+    if skip_existing:
+        try:
+            async with session.begin_nested():
+                session.add(Achievement(user_id=user_id, code=code))
+        except IntegrityError:
+            if code not in await get_user_achievement_codes(session, user_id):
+                raise
+            return False
+    else:
+        session.add(Achievement(user_id=user_id, code=code))
     await session.commit()
+    return True
 
 
 # ─── CSV-экспорт (C2.6 Блок 4) ────────────────────────────────────

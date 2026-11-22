@@ -245,7 +245,7 @@ def test_screen_shows_exercises_gradations():
     text = ach.render_achievements_screen(
         codes=set(), session_dates=[], workouts_count=0,
         exercises_count=12, pr_total=0, weight_gain_names=[],
-        today=date(2026, 11, 19))
+        today=date(2026, 11, 19), all_sets=[])
     assert "🔒 🧩 Экспериментатор — 10/10 упр." in text
     assert "🔒 🎯 Коллекционер движений — 12/25 упр." in text
     assert "🔒 🧠 Энциклопедия упражнений — 12/50 упр." in text
@@ -267,17 +267,89 @@ def test_achievements_message_contains_titles():
     assert text.index("Первый рекорд") < text.index("Вес +20%")
 
 
+def test_december_challenge_screen_before_during_and_after_period():
+    code = "monthly_12_2026_12"
+    dates = [date(2026, 12, 1)] * 12
+
+    def render(today, codes=(), archive=False):
+        return "\n".join(ach.render_seasonal_challenges(
+            codes=set(codes), session_dates=dates, all_sets=[], today=today, archive=archive,
+        ))
+
+    upcoming = render(date(2026, 11, 30))
+    assert upcoming.count("Старт 01.12.2026") == 1
+    assert upcoming.count("Декабрь 2026") == 1
+    active = render(date(2026, 12, 31), {code})
+    assert active.count("Декабрь 2026") == 1
+    assert active.count("✅ Цель выполнена") == 1
+    assert "В процессе" not in active
+    assert "<b>0/12</b>" in render(date(2026, 11, 30))
+    assert "✅ Цель выполнена" in render(date(2026, 12, 31), {code})
+    assert "Декабрь 2026" not in render(date(2027, 1, 1), {code})
+    assert "Цель не выполнена" in render(date(2027, 1, 1), archive=True)
+    assert "✅ Цель выполнена" in render(date(2027, 1, 1), {code}, archive=True)
+    assert "<b>12/12</b>" in render(date(2027, 1, 1), {code}, archive=True)
+    assert "Декабрь 2026" in ach.build_achievements_message([(code, "")])
+
+
+def test_seasonal_pr_progress_uses_distinct_exercises_and_earlier_history():
+    old = _sess(30)
+    first = _sess(1, month=12, sess_id=2)
+    second = _sess(2, month=12, sess_id=3)
+    unfinished = _sess(2, month=12, sess_id=4)
+    unfinished.finished_at = None
+    sets = [
+        _s(10, "100", old, name="Тяга"),
+        _s(10, "90", first, name="Тяга"),
+        _s(10, "50", first, name="Жим <гантели>"),
+        _s(10, "55", second, name="Жим <гантели>"),
+        _s(12, "55 кг", second, set_number=2, name="Жим <гантели>"),
+        _s(20, "50", second, set_number=3, name="Жим <гантели>"),
+        _s(10, "70", unfinished, name="Присед"),
+        _c(600, second),
+    ]
+    for workout_set in sets:
+        workout_set.completed = True
+
+    today = date(2026, 12, 2)
+    assert ach.pr_exercises(sets, date(2026, 12, 1), today + timedelta(days=1)) == [
+        ("Жим <гантели>", "strength", "55 кг × 12"), ("Бег", "cardio", "10 мин"),
+    ]
+    text = "\n".join(ach.render_seasonal_challenges(
+        codes=set(), session_dates=[], all_sets=sets, today=today,
+    ))
+    assert "<b>2/3</b> разных упр. с личным рекордом" in text
+    assert "В зачёте:\n• Жим &lt;гантели&gt; — <b>55 кг × 12</b>" in text
+    assert "• Бег — <b>10 мин</b>" in text
+
+    next_session = _sess(3, month=12, sess_id=5)
+    extra_sets = [_s(8, "60", next_session, name=name)
+                  for name in ("Присед", "Подъём")]
+    extra_sets.append(_s(8, "12 блоков", next_session, name="Жим <гантели>"))
+    for workout_set in extra_sets:
+        workout_set.completed = True
+    archive = "\n".join(ach.render_seasonal_challenges(
+        codes={"pr_exercises_3_2026_12"}, session_dates=[],
+        all_sets=sets + extra_sets, today=date(2027, 1, 1), archive=True,
+    ))
+    assert "<b>4/3</b> разных упр. с личным рекордом" in archive
+    assert "В зачёте:\n• Жим &lt;гантели&gt; — <b>12 блоков × 8</b>" in archive
+    assert "• Присед — <b>60 кг × 8</b>\nЕщё 1" in archive
+
+
 def test_screen_shows_progress_and_unlocked():
     month = [date(2026, 11, 1) + timedelta(days=2 * i) for i in range(12)]
     text = ach.render_achievements_screen(
         codes={"workouts_10", "monthly_12"},
         session_dates=month, workouts_count=14,
         exercises_count=4, pr_total=0, weight_gain_names=[],
-        today=date(2026, 11, 19))
+        today=date(2026, 11, 19), all_sets=[])
     assert "2 из 14" in text
-    assert "✅ 🎖 Первая десятка · 14" in text
-    assert "✅ 🗓 Месяц в ритме · 12" in text
-    assert "🔒 ⚙️ Железный конвейер — 12/20" in text
+    assert "✅ 🎖 <b>Первая десятка</b> — 10 завершённых тренировок" in text
+    assert "✅ 🗓 <b>Месяц в ритме</b> — 12 тренировок за один календарный месяц" in text
+    assert "🔒 ⚙️ Железный конвейер — 12/20 тренировок за месяц" in text
+    assert "🔒 💥 Взрывная тренировка — 3 и более рекорда за одну тренировку" in text
+    assert "🔒 📈 Вес +20% — рост рабочего веса на 20% от стартовой планки" in text
     assert "🔒 🥇 Полсотни тренировок — 14/50" in text
     assert "🔒 🔥 Первый рекорд" in text
     assert "🔒 🧩 Экспериментатор — 4/10 упр." in text
@@ -289,13 +361,14 @@ def test_screen_weight_gain_lists_all_exercises():
         codes={"weight_plus_20"}, session_dates=[], workouts_count=0,
         exercises_count=0, pr_total=0,
         weight_gain_names=["Приседания", "Жим", "Тяга", "Становая"],
-        today=date(2026, 11, 19))
-    assert "✅ 📈 Вес +20% · Приседания, Жим, Тяга…" in text
+        today=date(2026, 11, 19), all_sets=[])
+    assert " · Приседания, Жим, Тяга…" in text
 
 
 def test_screen_weight_gain_unlocked_with_name():
     text = ach.render_achievements_screen(
         codes={"weight_plus_20"}, session_dates=[], workouts_count=0,
-        exercises_count=0, pr_total=0, weight_gain_names=["Приседания"],
-        today=date(2026, 11, 19))
-    assert "✅ 📈 Вес +20% · Приседания" in text
+        exercises_count=0, pr_total=0, weight_gain_names=["Жим <гантели>"],
+        today=date(2026, 11, 19), all_sets=[])
+    assert "✅ 📈 <b>Вес +20%</b>" in text
+    assert " · Жим &lt;гантели&gt;" in text

@@ -897,15 +897,22 @@ def analytics_best_kb(year: int, month: int,
     return kb.as_markup()
 
 
-def achievements_kb(back_ym: tuple[int, int] | None
+def achievements_kb(back_ym: tuple[int, int] | None, *,
+                    has_archive: bool = False, archive: bool = False,
                     ) -> InlineKeyboardMarkup:
     """Клавиатура экрана «🏆 Ачивки».
 
     back_ym — (год, месяц) дашборда, откуда пришли: кнопка вернёт
-    в аналитику за тот же месяц. None — только обновление.
+    в аналитику за тот же месяц.
     """
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔄 Обновить", callback_data="an_ach_refresh")
+    origin = f":{back_ym[0]}:{back_ym[1]}" if back_ym else ""
+    if archive:
+        kb.button(text="⬅️ К достижениям", callback_data=f"an_ach_refresh{origin}")
+    else:
+        kb.button(text="🔄 Обновить", callback_data=f"an_ach_refresh{origin}")
+        if has_archive:
+            kb.button(text="📦 Архив сезонных", callback_data=f"an_ach_archive{origin}")
     if back_ym:
         y, m = back_ym
         kb.button(text="📅 К аналитике", callback_data=f"an_month:{y}:{m}")
