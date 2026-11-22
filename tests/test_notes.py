@@ -46,12 +46,13 @@ async def test_exercises_with_notes_counts_and_filters_user(session):
 
     ws1 = await _add_session(session, user.id, wt.id, 1)
     ws2 = await _add_session(session, user.id, wt.id, 3)
+    ws3 = await _add_session(session, user.id, wt.id, 5)
     await _add_session(session, other.id, wt2.id, 1)
 
     session.add_all([
         SessionExerciseNote(session_id=ws1.id, exercise_id=ex.id, note="a"),
         SessionExerciseNote(session_id=ws2.id, exercise_id=ex.id, note="b"),
-        SessionExerciseNote(session_id=ws2.id, exercise_id=ex.id, note="c"),
+        SessionExerciseNote(session_id=ws3.id, exercise_id=ex.id, note="c"),
     ])
     # Заметка чужого пользователя — не должна попасть
     foreign_ws = await _add_session(session, other.id, wt2.id, 2)

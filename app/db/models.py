@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer,
     JSON, Numeric, String, Text,
-    UniqueConstraint, func,
+    UniqueConstraint, false, func, true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -46,8 +46,8 @@ class WorkoutType(Base):
     name: Mapped[str] = mapped_column(String(64))
     description: Mapped[str | None] = mapped_column(Text)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
-    is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
-    is_in_rotation: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    is_in_rotation: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -78,7 +78,7 @@ class Exercise(Base):
     is_optional: Mapped[bool] = mapped_column(Boolean, default=False)
     notes: Mapped[str | None] = mapped_column(Text)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
-    is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     workout_type: Mapped["WorkoutType"] = relationship(back_populates="exercises")
 
@@ -133,6 +133,9 @@ class SessionSet(Base):
 class SessionExerciseNote(Base):
     """Заметка к конкретному упражнению в рамках одной тренировки."""
     __tablename__ = "session_exercise_notes"
+    __table_args__ = (
+        UniqueConstraint("session_id", "exercise_id", name="session_exercise_notes_session_id_exercise_id_key"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     session_id: Mapped[int] = mapped_column(ForeignKey("workout_sessions.id", ondelete="CASCADE"), index=True)

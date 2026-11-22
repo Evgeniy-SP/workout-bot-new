@@ -9,6 +9,7 @@ __pycache__/
 *.db
 backups/
 *.sql
+!/scripts/prepare_vps_0001.sql
 *.sql~
 
 # Покрытие тестами: в репо коммитим только coverage.svg
