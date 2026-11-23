@@ -5,7 +5,7 @@
 from collections import defaultdict
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +47,32 @@ async def get_sets_grouped(session: AsyncSession, session_id: int) -> dict[int, 
     for s in result.scalars():
         grouped[s.exercise_id].append(s)
     return dict(grouped)
+
+
+async def get_session_skipped_exercise_ids(session: AsyncSession, session_id: int) -> set[int]:
+    result = await session.scalars(
+        select(SessionSkippedExercise.exercise_id)
+        .where(SessionSkippedExercise.session_id == session_id)
+    )
+    return set(result)
+
+
+async def get_previous_finished_session(
+    session: AsyncSession, current: WorkoutSession,
+) -> WorkoutSession | None:
+    """Предыдущая завершённая сессия того же типа по порядку истории."""
+    return await session.scalar(
+        select(WorkoutSession)
+        .where(
+            WorkoutSession.user_id == current.user_id,
+            WorkoutSession.workout_type_id == current.workout_type_id,
+            tuple_(WorkoutSession.started_at, WorkoutSession.id)
+            < (current.started_at, current.id),
+            WorkoutSession.finished_at.is_not(None),
+        )
+        .order_by(WorkoutSession.started_at.desc(), WorkoutSession.id.desc())
+        .limit(1)
+    )
 
 
 async def get_last_completed_set(

@@ -2,9 +2,47 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from app.db.models import User, WorkoutType, WorkoutSession
 from app.db.queries import (
-    get_user_sessions, get_user_sessions_count,
+    get_previous_finished_session, get_user_sessions, get_user_sessions_count,
     get_workout_types_with_sessions,
 )
+
+
+@pytest.mark.asyncio
+async def test_previous_finished_session_uses_same_workout_and_history_order(session):
+    user = User(tg_id=1, full_name="Test")
+    other_user = User(tg_id=2, full_name="Other")
+    workout = WorkoutType(user=user, name="Верх")
+    other_workout = WorkoutType(user=user, name="Низ")
+    session.add_all([workout, other_workout, other_user])
+    await session.flush()
+
+    start = datetime(2026, 11, 20, tzinfo=timezone.utc)
+    earlier = start - timedelta(days=1)
+    finished = start + timedelta(hours=1)
+    oldest = WorkoutSession(user_id=user.id, workout_type_id=workout.id,
+                            started_at=earlier, finished_at=finished)
+    previous = WorkoutSession(user_id=user.id, workout_type_id=workout.id,
+                              started_at=start, finished_at=finished)
+    current = WorkoutSession(user_id=user.id, workout_type_id=workout.id,
+                             started_at=start, finished_at=finished)
+    session.add_all([
+        oldest,
+        WorkoutSession(user_id=user.id, workout_type_id=workout.id,
+                       started_at=start),
+        WorkoutSession(user_id=user.id, workout_type_id=other_workout.id,
+                       started_at=start, finished_at=finished),
+        WorkoutSession(user_id=other_user.id, workout_type_id=workout.id,
+                       started_at=start, finished_at=finished),
+        previous,
+        current,
+        WorkoutSession(user_id=user.id, workout_type_id=workout.id,
+                       started_at=finished, finished_at=finished + timedelta(hours=1)),
+    ])
+    await session.flush()
+
+    assert await get_previous_finished_session(session, current) is previous
+    assert await get_previous_finished_session(session, previous) is oldest
+    assert await get_previous_finished_session(session, oldest) is None
 
 
 @pytest.mark.asyncio

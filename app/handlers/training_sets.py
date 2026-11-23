@@ -1,6 +1,7 @@
 """Хэндлеры для сохранения подходов (кнопки «Как планировал» и «Ввести фактически»)."""
 import asyncio
 from datetime import datetime, timezone
+from html import escape
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
@@ -24,6 +25,18 @@ from app.states import TrainingFSM
 from app.utils import format_duration, format_weight, parse_minutes_to_seconds
 
 router = Router()
+
+
+def _weight_entry_text(ex: Exercise, reps: int, data: dict) -> str:
+    weight = data.get("suggested_weight", ex.weight_kg)
+    source = data.get("weight_hint_source", "План")
+    return (
+        f"🏋️ <b>{ex.name}</b>\n\n"
+        f"Повторов: <b>{reps}</b>.\n"
+        "Теперь введи вес (снаряд).\n"
+        f"<i>{source}:</i> <code>{escape(format_weight(weight))}</code>\n\n"
+        "<i>(Нажми на значение, чтобы скопировать)</i>"
+    )
 
 
 @router.callback_query(F.data.startswith("tr_save_planned:"))
@@ -126,15 +139,18 @@ async def cb_custom_start(callback: CallbackQuery, session: AsyncSession,
     if completed:
         # Берем из последнего подхода в ТЕКУЩЕЙ тренировке
         suggested_weight = completed[-1].weight_kg
+        weight_hint_source = "В предыдущем подходе"
         history = f"<i>В предыдущем подходе:</i> <code>{completed[-1].reps}</code> повторений"
     else:
         # Если сегодня еще не делали, берем из истории
         last_set = await get_last_completed_set(session, ws.user_id, ex_id, current_session_id=session_id)
         if last_set:
             suggested_weight = last_set.weight_kg
+            weight_hint_source = "В прошлый раз"
             history = f"<i>В прошлый раз:</i> <code>{last_set.reps}</code> повторений"
         else:
             suggested_weight = ex.weight_kg
+            weight_hint_source = "План"
             history = f"<i>План:</i> <code>{ex.reps}</code> повторений"
 
     await state.update_data(
@@ -144,7 +160,8 @@ async def cb_custom_start(callback: CallbackQuery, session: AsyncSession,
         return_to="tr_ex_card",
         temp_num="",
         temp_weight="",
-        suggested_weight=suggested_weight
+        suggested_weight=suggested_weight,
+        weight_hint_source=weight_hint_source,
     )
 
     if ex.kind == "strength":
@@ -190,22 +207,15 @@ async def fsm_enter_reps(message: Message, state: FSMContext,
                                     reply_markup=cancel_kb())
 
     data = await state.get_data()
-    await state.update_data(custom_reps=int(text))
+    reps = int(text)
+    await state.update_data(custom_reps=reps, temp_weight="")
 
     ex = await session.get(Exercise, data["ex_id"])
-
-    # Берем вес из стейта (который мы сохранили в cb_custom_start)
-    suggested = data.get("suggested_weight") or ex.weight_kg
-    suggestion = format_weight(suggested) if suggested else "без веса"
 
     await state.set_state(TrainingFSM.entering_weight)
 
     await message.answer(
-        f"🏋️ <b>{ex.name}</b>\n\n"
-        f"Повторов: <b>{text}</b>.\n"
-        f"Теперь введи вес (снаряд).\n"
-        f"<i>В предыдущем подходе:</i> <code>{suggestion}</code>\n\n"
-        f"<i>(Нажми на значение, чтобы скопировать)</i>",
+        _weight_entry_text(ex, reps, data),
         reply_markup=weight_keypad_kb()
     )
 
@@ -421,7 +431,8 @@ async def cb_edit_set(callback: CallbackQuery, session: AsyncSession,
         editing_set_id=set_id,
         return_to="tr_strength_summary",
         temp_num="",
-        suggested_weight=target.weight_kg # Сохраняем текущий вес для следующего шага
+        suggested_weight=target.weight_kg,
+        weight_hint_source="Вес этого подхода",
     )
     await state.set_state(TrainingFSM.entering_reps)
 
@@ -450,21 +461,32 @@ async def cb_add_set(callback: CallbackQuery, session: AsyncSession,
     completed = [s for s in sets if s.completed]
     set_num = len(completed) + 1
 
-    ws = await session.get(WorkoutSession, session_id)
-    last_set = await get_last_completed_set(session, ws.user_id, ex_id,
-                                            current_session_id=session_id)
-
-    if last_set:
-        history = f"🕰 Прошлый раз: <b>{last_set.reps} × {format_weight(last_set.weight_kg)}</b>"
+    if completed:
+        reference = completed[-1]
+        source = "В предыдущем подходе"
     else:
-        history = f"📋 План: <b>{ex.reps} × {format_weight(ex.weight_kg)}</b>"
+        ws = await session.get(WorkoutSession, session_id)
+        if not ws:
+            return await callback.answer("Тренировка не найдена", show_alert=True)
+        reference = await get_last_completed_set(
+            session, ws.user_id, ex_id, current_session_id=session_id,
+        )
+        source = "В прошлый раз" if reference else "План"
+
+    reps = reference.reps if reference else ex.reps
+    weight = reference.weight_kg if reference else ex.weight_kg
+    reps_text = str(reps) if reps is not None else "—"
+    history = f"🕰 {source}: <b>{reps_text} × {escape(format_weight(weight))}</b>"
 
     await state.update_data(
         session_id=session_id,
         ex_id=ex_id,
         editing_set_id=None,
         return_to="tr_strength_summary",
-        temp_num=""
+        temp_num="",
+        temp_weight="",
+        suggested_weight=weight,
+        weight_hint_source=source,
     )
     await state.set_state(TrainingFSM.entering_reps)
 
@@ -585,22 +607,14 @@ async def cb_numeric_input(callback: CallbackQuery, state: FSMContext, session: 
             return await callback.answer("Введи хотя бы одну цифру!",
                                          show_alert=True)
 
-        await state.update_data(custom_reps=int(current_val))
-        await state.update_data(temp_weight="")
+        reps = int(current_val)
+        await state.update_data(custom_reps=reps, temp_weight="")
         await state.set_state(TrainingFSM.entering_weight)
 
         ex = await session.get(Exercise, data["ex_id"])
 
-        # Берем вес из стейта
-        suggested = data.get("suggested_weight") or ex.weight_kg
-        suggestion = format_weight(suggested) if suggested else "без веса"
-
         await callback.message.edit_text(
-            f"🏋️ <b>{ex.name}</b>\n\n"
-            f"Повторов: <b>{current_val}</b>.\n"
-            f"Теперь введи вес (снаряд).\n"
-            f"<i>В предыдущем подходе:</i> <code>{suggestion}</code>\n\n"
-            f"<i>(Нажми на значение, чтобы скопировать)</i>",
+            _weight_entry_text(ex, reps, data),
             reply_markup=weight_keypad_kb()
         )
         await callback.answer()

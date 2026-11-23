@@ -20,6 +20,7 @@ from app.db.queries import (
     get_last_completed_set,
     get_last_note_for_exercise,
     get_last_workout_note,
+    get_session_skipped_exercise_ids,
     get_sets_grouped,
 )
 from app.keyboards.workout_kb import (
@@ -307,13 +308,7 @@ async def render_list(session: AsyncSession, session_id: int, user_id: int):
     exercises = sorted(wt.exercises, key=lambda e: e.sort_order)
     sets_by_ex = await get_sets_grouped(session, session_id)
 
-    # === ЗАГРУЖАЕМ СЕРЫЕ КРУЖКИ ===
-    from app.db.models import SessionSkippedExercise
-    skipped_res = await session.execute(
-        select(SessionSkippedExercise.exercise_id).where(SessionSkippedExercise.session_id == session_id)
-    )
-    skipped_ex_ids = set(skipped_res.scalars())
-    # ==============================
+    skipped_ex_ids = await get_session_skipped_exercise_ids(session, session_id)
 
     last_time = None
     last_ex_id = None

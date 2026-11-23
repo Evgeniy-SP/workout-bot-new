@@ -1,7 +1,10 @@
 """Хэндлеры для завершения тренировки и управления упражнениями на ходу."""
 import asyncio
 import random
+import re
 from datetime import datetime, timezone
+from html import escape, unescape
+from textwrap import wrap
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
@@ -11,7 +14,10 @@ from sqlalchemy import func as sa_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Exercise, SessionSet, WorkoutSession
-from app.db.queries import get_exercise_history, get_sets_grouped
+from app.db.queries import (
+    get_exercise_history, get_previous_finished_session, get_session_skipped_exercise_ids,
+    get_sets_grouped,
+)
 from app.keyboards.workout_kb import (
     after_finish_kb, choose_kind_kb, confirm_training_delete_kb,
     finish_confirm_kb, training_remove_menu_kb,
@@ -23,9 +29,49 @@ from app.services.analytics_service import (
 from app.services.training_service import (
     load_workout, render_approach_screen, render_list,
 )
+from app.services.workout_comparison import compare_exercise, format_set_count
 from app.states import WorkoutCreate
+from app.utils import fmt_msk_datetime, format_hm, to_msk
 
 router = Router()
+
+TELEGRAM_TEXT_LIMIT = 4096
+
+
+def _visible_length(text: str) -> int:
+    return len(unescape(re.sub(r"<[^>]+>", "", text)))
+
+
+def _comparison_pages(
+    heading: str, comparisons: list[tuple[str, str, str]],
+) -> list[str]:
+    header = f"<blockquote>{heading}\n\n"
+    capacity = TELEGRAM_TEXT_LIMIT - _visible_length(header)
+    pages = []
+    rows = []
+    remaining = capacity
+
+    for icon, name, description in comparisons:
+        prefix = f"{icon} <b>{escape(name)}</b> · "
+        width = capacity - _visible_length(prefix)
+        parts = [description]
+        if len(description) > width:
+            parts = wrap(description, width=width, replace_whitespace=False)
+        for part in parts:
+            row = prefix + escape(part)
+            size = _visible_length(row)
+            separator = 1 if rows else 0
+            if size + separator > remaining:
+                pages.append(header + "\n".join(rows) + "</blockquote>")
+                rows = []
+                remaining = capacity
+                separator = 0
+            rows.append(row)
+            remaining -= size + separator
+
+    if rows:
+        pages.append(header + "\n".join(rows) + "</blockquote>")
+    return pages
 
 
 # ═══════════════════════════════════════════════════════════
@@ -240,40 +286,47 @@ async def cb_finish_ask(callback: CallbackQuery, session: AsyncSession):
 
     wt = await load_workout(session, ws.workout_type_id)
     sets_by_ex = await get_sets_grouped(session, session_id)
+    skipped_ex_ids = await get_session_skipped_exercise_ids(session, session_id)
 
     total_ex = 0
-    not_done = 0
+    partial = []
+    not_started = []
     for ex in wt.exercises:
+        if ex.id in skipped_ex_ids:
+            continue
         sets = sets_by_ex.get(ex.id, [])
         done = sum(1 for s in sets if s.completed)
         plan = (ex.sets or 0) if ex.kind == "strength" else 1
-        is_done = done >= plan
+        if ex.is_optional and done == 0:
+            continue
+        total_ex += 1
+        if done >= plan:
+            continue
 
-        if not ex.is_optional or done > 0:
-            total_ex += 1
-            if not is_done:
-                not_done += 1
+        name = escape(ex.name)
+        if done:
+            remaining = format_set_count(plan - done)
+            verb = "остался" if remaining.endswith(" подход") else "осталось"
+            partial.append(f"🟡 <b>{name}</b> · {verb} <b>{remaining}</b>")
+        else:
+            not_started.append(f"▪️ {name} (0/{plan})")
 
-    if not_done > 0:
-        # Собираем названия невыполненных упражнений
-        incomplete_names = []
-        for ex in wt.exercises:
-            sets = sets_by_ex.get(ex.id, [])
-            done = sum(1 for s in sets if s.completed)
-            plan = (ex.sets or 0) if ex.kind == "strength" else 1
-            is_done = done >= plan
-
-            # Если не сделано и это не опциональное
-            if not is_done and not ex.is_optional:
-                incomplete_names.append(f"▪️ {ex.name} ({done}/{plan})")
+    not_done = len(partial) + len(not_started)
+    if not_done:
+        exercises_text = "\n\n".join("\n".join(group) for group in (partial, not_started) if group)
 
         text = (
             f"🏁 <b>Завершить тренировку?</b>\n\n"
-            f"⚠️ Не выполнено полностью: <b>{not_done} из {total_ex}</b> упражнений:\n"
-            + "\n".join(incomplete_names) + "\n\n"
+            f"⚠️ Не выполнено полностью: <b>{not_done} из {total_ex}</b> упражнений:\n\n"
+            f"{exercises_text}\n\n"
             "Тренировка сохранится в истории. Те подходы, которые ты успел сделать, будут записаны. "
             "Недоделанные подходы не сохранятся.\n\n"
             "Точно завершить?"
+        )
+    elif skipped_ex_ids:
+        text = (
+            "🏁 <b>Завершить тренировку?</b>\n\n"
+            "✅ Все упражнения закрыты. Тренировка сохранится в истории."
         )
     else:
         text = (
@@ -300,6 +353,7 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
 
     wt = await load_workout(session, ws.workout_type_id)
     sets_by_ex = await get_sets_grouped(session, session_id)
+    skipped_ex_ids = await get_session_skipped_exercise_ids(session, session_id)
 
     # === C2.6: сводка рекордов за тренировку (ОДИН блок на все упражнения) ===
     from app.services.pr_service import build_pr_summary, session_pr_events
@@ -329,16 +383,32 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
 
     total_ex = 0
     done_ex = 0
+    early_ex = 0
+    exercise_lines = []
     for ex in wt.exercises:
         sets = sets_by_ex.get(ex.id, [])
         done = sum(1 for s in sets if s.completed)
         plan = (ex.sets or 0) if ex.kind == "strength" else 1
-        is_done = done >= plan
+        early = done < plan and ex.id in skipped_ex_ids
+        if ex.is_optional and done == 0 and not early:
+            continue
 
-        if not ex.is_optional or done > 0:
-            total_ex += 1
-        if is_done:
+        total_ex += 1
+        name = escape(ex.name)
+        opt_mark = " <i>(опц.)</i>" if ex.is_optional else ""
+        if done >= plan:
             done_ex += 1
+            exercise_lines.append(f"✅ {name}{opt_mark}")
+        elif early:
+            early_ex += 1
+            exercise_lines.append(
+                f"🏁 <b>{name}</b>{opt_mark} · завершено досрочно ({done}/{plan})"
+            )
+        elif done > 0:
+            remaining = format_set_count(plan - done)
+            exercise_lines.append(f"🟡 {name}{opt_mark}: {done}/{plan} · до плана {remaining}")
+        else:
+            exercise_lines.append(f"⚪ {name}")
 
     ratio = done_ex / total_ex if total_ex else 0
 
@@ -350,15 +420,17 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
     rest = average_rest(all_sets)
     rest_ex = average_rest_between_exercises(all_sets)
 
-    from app.utils import fmt_msk_datetime, format_hm
     finished_time_str = fmt_msk_datetime(ws.finished_at)
+    progress = f"📊 По плану: {done_ex} из {total_ex}"
+    if early_ex:
+        progress += f" · досрочно: {early_ex}"
 
     lines = [
         f"🏁 <b>{wt.name}</b> — завершена!",
         f"<i>Завершена: {finished_time_str} (МСК)</i>", # <-- Добавили время
         "", # <-- Добавили отступ
         f"⏱ Длительность: ~{format_hm(minutes)}",
-        f"📊 Выполнено: {done_ex} из {total_ex} упражнений",
+        progress,
     ]
     if rest is not None:
         lines.append(f"😴 Средний отдых между подходами: "
@@ -368,26 +440,30 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
                      f"{round(rest_ex / 60)} мин")
     lines.append("")
 
-    # Текстовый цикл (для красивого вывода в сообщении)
-    for ex in wt.exercises:
-        sets = sets_by_ex.get(ex.id, [])
-        done = sum(1 for s in sets if s.completed)
-        plan = (ex.sets or 0) if ex.kind == "strength" else 1
-        is_done = done >= plan
+    comparison_position = len(lines)
+    previous = await get_previous_finished_session(session, ws)
+    comparison_pages = []
+    if previous:
+        previous_sets = await get_sets_grouped(session, previous.id)
+        comparisons = []
+        for ex in wt.exercises:
+            if ex.kind != "strength":
+                continue
+            change = compare_exercise(
+                sets_by_ex.get(ex.id, []), previous_sets.get(ex.id, []),
+            )
+            if change:
+                icon, description = change
+                comparisons.append((icon, ex.name, description))
+        if comparisons:
+            comparison_date = to_msk(previous.started_at)
+            date_format = "%d.%m, %H:%M"
+            if comparison_date.year != to_msk(ws.started_at).year:
+                date_format = "%d.%m.%Y, %H:%M"
+            heading = f"🆚 <b>Сравнение с прошлой тренировкой ({comparison_date:{date_format}})</b>"
+            comparison_pages = _comparison_pages(heading, comparisons)
 
-        opt_mark = " <i>(опц.)</i>" if ex.is_optional else ""
-
-        # Если упражнение опциональное и НЕ сделано (0 подходов) — вообще не выводим его
-        if ex.is_optional and done == 0:
-            continue
-
-        if is_done:
-            lines.append(f"✅ {ex.name}{opt_mark}")
-        elif done > 0:
-            lines.append(f"🟡 {ex.name}{opt_mark}: {done}/{plan}")
-        else:
-            # Сюда попадут только обязательные, которые пропущены
-            lines.append(f"⚪ {ex.name}")
+    lines.extend(exercise_lines)
 
     # C2.6: блок рекордов (перед мотивационной фразой)
     if pr_summary_block:
@@ -426,9 +502,18 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
         lines.append("")
         lines.append(f"📝 <b>Заметка к тренировке:</b>\n<i>{ws.notes}</i>")
 
-    await callback.message.edit_text("\n".join(lines),
-                                     reply_markup=after_finish_kb(session_id))
+    summary = "\n".join(lines)
+    if len(comparison_pages) == 1:
+        inline_lines = lines[:comparison_position] + [comparison_pages[0], ""] + lines[comparison_position:]
+        inline_summary = "\n".join(inline_lines)
+        if _visible_length(inline_summary) <= TELEGRAM_TEXT_LIMIT:
+            summary = inline_summary
+            comparison_pages = []
+
+    await callback.message.edit_text(summary, reply_markup=after_finish_kb(session_id))
     await callback.answer("Тренировка завершена")
+    for page in comparison_pages:
+        await callback.message.answer(page)
 
     # Мгновенное сообщение о разблокированных ачивках — ПОСЛЕ экрана
     # итогов, с автоудалением через 15 сек (как у PR-уведомлений)
