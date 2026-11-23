@@ -43,3 +43,55 @@ jobs:
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
             summary.write(f"## Покрытие тестами\n\n**{percent:.2%}** строк приложения\n")
         PY
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VPS_DEPLOY_ENABLED == 'true'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    concurrency:
+      group: workout-bot-production
+      cancel-in-progress: false
+
+    steps:
+    - name: Checkout the tested commit
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+
+    - name: Send the source archive to the VPS
+      shell: bash
+      env:
+        SSH_HOST: ${{ secrets.SSH_HOST }}
+        SSH_USER: ${{ secrets.SSH_USER }}
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+      run: |
+        set -euo pipefail
+        git_head=$(git ls-remote origin refs/heads/main)
+        if [[ "${git_head%%$'\t'*}" != "$GITHUB_SHA" ]]; then
+          echo "A newer commit is on main. Skipping deployment of $GITHUB_SHA."
+          exit 0
+        fi
+
+        : "${SSH_HOST:?}" "${SSH_USER:?}" "${SSH_PRIVATE_KEY:?}" "${SSH_KNOWN_HOSTS:?}"
+        temp_dir=$(mktemp -d)
+        trap 'rm -rf -- "$temp_dir"' EXIT
+        umask 077
+        printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "$temp_dir/key"
+        printf '%s\n' "$SSH_KNOWN_HOSTS" | tr -d '\r' > "$temp_dir/known_hosts"
+        git archive --format=tar.gz --output="$temp_dir/source.tar.gz" "$GITHUB_SHA"
+
+        bootstrap='
+          set -euo pipefail
+          source_dir=$(mktemp -d)
+          trap '\''rm -rf -- "$source_dir"'\'' EXIT
+          tar -xzf - -C "$source_dir"
+          bash "$source_dir/scripts/deploy_vps.sh" "$1" "$source_dir"
+        '
+        ssh -i "$temp_dir/key" -o BatchMode=yes -o IdentitiesOnly=yes \
+          -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temp_dir/known_hosts" \
+          -o UpdateHostKeys=no -o ConnectTimeout=15 -l "$SSH_USER" -- "$SSH_HOST" \
+          "bash -c $(printf '%q' "$bootstrap") -- $GITHUB_SHA" < "$temp_dir/source.tar.gz"
