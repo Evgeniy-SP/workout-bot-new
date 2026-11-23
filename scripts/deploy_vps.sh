@@ -13,8 +13,15 @@ exec 9>.deploy/deploy.lock
 flock -n 9
 
 compose=(docker compose -f docker-compose.yml)
-image="workout-bot-new:$sha"
+image="workout-bot-new:${sha:0:7}"
 rollback_image=workout-bot-new:rollback
+
+if existing_revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image" 2>/dev/null); then
+  if [[ "$existing_revision" != "$sha" ]]; then
+    printf 'Image tag %s is already assigned to a different or unknown revision.\n' "$image" >&2
+    exit 1
+  fi
+fi
 
 docker build --label "org.opencontainers.image.revision=$sha" -t "$image" "$source_dir"
 image_id=$(docker image inspect --format '{{.Id}}' "$image")
