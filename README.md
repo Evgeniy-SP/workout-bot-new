@@ -141,6 +141,8 @@ python -m alembic check
 Задача `deploy` в Python CI запускается после успешных тестов на пуше в
 `main`, если переменная репозитория `VPS_DEPLOY_ENABLED` равна `true`.
 Перед первым включением отключи workflow деплоя в старом репозитории.
+Ручной запуск Python CI с ветки `main` проверяет SSH командой `hostname`.
+Он не требует `VPS_DEPLOY_ENABLED` и не запускает деплой.
 В новом репозитории нужны секреты `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`
 и `SSH_KNOWN_HOSTS`. Последний содержит запись SSH host key, проверенную
 по доверенному каналу. У пользователя SSH должен быть доступ к Docker и

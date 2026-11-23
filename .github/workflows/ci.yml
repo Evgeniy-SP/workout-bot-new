@@ -2,6 +2,7 @@ name: Python CI
 run-name: Python CI 🧪 · ${{ github.event.head_commit.message }} · by @${{ github.actor }}
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "main" ]
   pull_request:
@@ -45,7 +46,7 @@ jobs:
         PY
 
   deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VPS_DEPLOY_ENABLED == 'true'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && vars.VPS_DEPLOY_ENABLED == 'true'))
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -57,11 +58,12 @@ jobs:
 
     steps:
     - name: Checkout the tested commit
+      if: github.event_name == 'push'
       uses: actions/checkout@v4
       with:
         ref: ${{ github.sha }}
 
-    - name: Send the source archive to the VPS
+    - name: Verify SSH or send the source archive to the VPS
       shell: bash
       env:
         SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -70,18 +72,28 @@ jobs:
         SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
       run: |
         set -euo pipefail
-        git_head=$(git ls-remote origin refs/heads/main)
-        if [[ "${git_head%%$'\t'*}" != "$GITHUB_SHA" ]]; then
-          echo "A newer commit is on main. Skipping deployment of $GITHUB_SHA."
-          exit 0
-        fi
-
         : "${SSH_HOST:?}" "${SSH_USER:?}" "${SSH_PRIVATE_KEY:?}" "${SSH_KNOWN_HOSTS:?}"
         temp_dir=$(mktemp -d)
         trap 'rm -rf -- "$temp_dir"' EXIT
         umask 077
         printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "$temp_dir/key"
         printf '%s\n' "$SSH_KNOWN_HOSTS" | tr -d '\r' > "$temp_dir/known_hosts"
+        ssh_command=(ssh -i "$temp_dir/key" -o BatchMode=yes -o IdentitiesOnly=yes
+          -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temp_dir/known_hosts"
+          -o UpdateHostKeys=no -o ConnectTimeout=15 -l "$SSH_USER" -- "$SSH_HOST")
+
+        if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+          hostname=$("${ssh_command[@]}" hostname)
+          [[ "$hostname" == 46638 ]]
+          printf 'Verified VPS hostname: %s\n' "$hostname"
+          exit 0
+        fi
+
+        git_head=$(git ls-remote origin refs/heads/main)
+        if [[ "${git_head%%$'\t'*}" != "$GITHUB_SHA" ]]; then
+          echo "A newer commit is on main. Skipping deployment of $GITHUB_SHA."
+          exit 0
+        fi
         git archive --format=tar.gz --output="$temp_dir/source.tar.gz" "$GITHUB_SHA"
 
         bootstrap='
@@ -91,7 +103,5 @@ jobs:
           tar -xzf - -C "$source_dir"
           bash "$source_dir/scripts/deploy_vps.sh" "$1" "$source_dir"
         '
-        ssh -i "$temp_dir/key" -o BatchMode=yes -o IdentitiesOnly=yes \
-          -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temp_dir/known_hosts" \
-          -o UpdateHostKeys=no -o ConnectTimeout=15 -l "$SSH_USER" -- "$SSH_HOST" \
+        "${ssh_command[@]}" \
           "bash -c $(printf '%q' "$bootstrap") -- $GITHUB_SHA" < "$temp_dir/source.tar.gz"
