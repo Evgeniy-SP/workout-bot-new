@@ -10,8 +10,8 @@ from app.db.models import (
     Exercise, SessionSet, User, WorkoutSession, WorkoutType,
 )
 from app.db.queries import (
-    add_achievement, get_challenge_archive_months, get_challenge_archive_results,
-    get_user_achievement_codes,
+    add_achievement, count_exercises_with_history, get_challenge_archive_months,
+    get_challenge_archive_results, get_user_achievement_codes,
 )
 from app.services.achievement_service import (
     close_monthly_challenges, render_challenge_archive, unlock_achievements,
@@ -60,6 +60,39 @@ async def test_codes_isolated_between_users(session):
 
 
 # ─── unlock_achievements: сквозная проверка с реальной БД ─────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish", [True, False], ids=["finish", "cancel"])
+async def test_active_workout_does_not_count_for_achievements(session, finish):
+    user = await _make_user(session)
+    workout = WorkoutType(user_id=user.id, name="Тест")
+    exercise = Exercise(workout_type=workout, name="Жим", kind="strength")
+    session.add(exercise)
+    await session.flush()
+    started_at = datetime(2026, 11, 25, 10, tzinfo=timezone.utc)
+    ws = WorkoutSession(user_id=user.id, workout_type_id=workout.id, started_at=started_at)
+    ws.sets.append(SessionSet(exercise_id=exercise.id, set_number=1, reps=5,
+                              weight_kg="70", completed=True))
+    session.add(ws)
+    await session.commit()
+
+    assert await count_exercises_with_history(session, user.id) == 0
+    assert await unlock_achievements(session, user.id, today=started_at.date()) == []
+    assert await get_user_achievement_codes(session, user.id) == set()
+
+    if finish:
+        ws.finished_at = started_at.replace(hour=11)
+        expected = [("pr_first", "")]
+    else:
+        await session.delete(ws)
+        expected = []
+    await session.commit()
+
+    assert await count_exercises_with_history(session, user.id) == int(finish)
+    assert await unlock_achievements(session, user.id, today=started_at.date()) == expected
+    assert await get_user_achievement_codes(session, user.id) == {code for code, _ in expected}
+    assert await unlock_achievements(session, user.id, today=started_at.date()) == []
 
 
 @pytest.mark.asyncio

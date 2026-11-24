@@ -491,7 +491,7 @@ async def get_finished_sessions_with_sets(
 
 async def get_all_completed_sets(session: AsyncSession,
                                  user_id: int) -> list[SessionSet]:
-    """Все завершённые подходы пользователя по хронологии.
+    """Выполненные подходы из завершённых тренировок пользователя по хронологии.
 
     Нужен для подсчёта суммарного числа PR и ачивок «+20% к весу»:
     объёмы в личном боте — сотни подходов, считается мгновенно.
@@ -503,6 +503,7 @@ async def get_all_completed_sets(session: AsyncSession,
         .join(WorkoutSession, SessionSet.session_id == WorkoutSession.id)
         .where(
             WorkoutSession.user_id == user_id,
+            WorkoutSession.finished_at.is_not(None),
             SessionSet.completed == True,
         )
         .options(
@@ -540,7 +541,7 @@ async def get_finished_session_dates(session: AsyncSession,
 
 async def count_exercises_with_history(session: AsyncSession,
                                        user_id: int) -> int:
-    """Сколько разных упражнений (по name+kind) пользователь выполнял."""
+    """Число разных упражнений (по name+kind) в завершённых тренировках."""
     result = await session.scalar(
         select(func.count())
         .select_from(
@@ -550,6 +551,7 @@ async def count_exercises_with_history(session: AsyncSession,
                   WorkoutSession.id == SessionSet.session_id)
             .where(
                 WorkoutSession.user_id == user_id,
+                WorkoutSession.finished_at.is_not(None),
                 SessionSet.completed == True,
             )
             .group_by(Exercise.name, Exercise.kind)
