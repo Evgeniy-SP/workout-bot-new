@@ -24,7 +24,8 @@ from app.services.progress_service import (
     daily_max_weights, to_chart_points,
 )
 from app.services.training_service import calculate_personal_records, get_user
-from app.utils import fmt_msk_date
+from app.utils import fmt_msk_date, format_weight
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 router = Router()
 
@@ -165,7 +166,6 @@ async def cb_history_view(callback: CallbackQuery, session: AsyncSession):
     text = render_history_details(ws)
 
     # Собираем клавиатуру с упражнениями
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
 
     unique_exercises = {}
@@ -177,6 +177,10 @@ async def cb_history_view(callback: CallbackQuery, session: AsyncSession):
         kb.button(text=f"📈 {ex_name}",
                   callback_data=f"ex_progress:{ex_id}:{session_id}:{page}"
                                + (f":{origin}" if origin else ""))
+
+    if ws.finished_at and any(s.completed and s.exercise and s.exercise.kind == "strength" for s in ws.sets):
+        kb.button(text="🔥 Отметки разминки",
+                  callback_data=f"hw:0:-:{callback.data.split(':', 1)[1]}")
 
     # CSV-экспорт этой тренировки (C2.6 Блок 4)
     kb.button(text="📤 Экспорт тренировки (CSV)",
@@ -198,6 +202,51 @@ async def cb_history_view(callback: CallbackQuery, session: AsyncSession):
         pass
 
     await callback.message.answer(text, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("hw:"))
+async def cb_history_warmups(callback: CallbackQuery, session: AsyncSession):
+    _, offset_text, selection, back = callback.data.split(":", 3)
+    ws = await get_session_details(session, int(back.split(":", 1)[0]))
+    user = await get_user(session, callback.from_user.id)
+    if not user or not ws or ws.user_id != user.id or not ws.finished_at:
+        return await callback.answer("Тренировка не найдена", show_alert=True)
+
+    sets = sorted(
+        (s for s in ws.sets if s.completed and s.exercise and s.exercise.kind == "strength"),
+        key=lambda s: (s.exercise.sort_order, s.exercise_id, s.set_number, s.id),
+    )
+    offset = int(offset_text)
+    shown = sets[offset:offset + 10]
+    if selection != "-":
+        set_id, warmup = selection.split(".")
+        target = next((s for s in shown if s.id == int(set_id)), None)
+        if not target:
+            return await callback.answer("Подход не найден", show_alert=True)
+        if target.is_warmup == (warmup == "1"):
+            return await callback.answer("Отметка уже сохранена")
+        target.is_warmup = warmup == "1"
+        await session.commit()
+
+    kb = InlineKeyboardBuilder()
+    for s in shown:
+        marker = "🔥" if s.is_warmup else "✅"
+        kb.button(
+            text=f"{marker} {s.exercise.name} · {s.reps} × {format_weight(s.weight_kg)}",
+            callback_data=f"hw:{offset}:{s.id}.{int(not s.is_warmup)}:{back}",
+        )
+    if offset:
+        kb.button(text="⬅️ Предыдущие", callback_data=f"hw:{offset - 10}:-:{back}")
+    if offset + 10 < len(sets):
+        kb.button(text="Следующие ➡️", callback_data=f"hw:{offset + 10}:-:{back}")
+    kb.button(text="⬅️ К тренировке", callback_data=f"hist_view:{back}")
+    kb.adjust(1)
+    await callback.message.edit_text(
+        "🔥 <b>Отметки разминки</b>\n\nНажми на подход, чтобы сменить отметку.\n"
+        "🔥 Разминка · ✅ Рабочий",
+        reply_markup=kb.as_markup(),
+    )
     await callback.answer()
 
 

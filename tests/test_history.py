@@ -1,10 +1,32 @@
 import pytest
 from datetime import datetime, timezone, timedelta
-from app.db.models import User, WorkoutType, WorkoutSession
+from app.db.models import Exercise, SessionSet, User, WorkoutType, WorkoutSession
 from app.db.queries import (
-    get_previous_finished_session, get_user_sessions, get_user_sessions_count,
+    get_last_completed_set, get_previous_finished_session, get_user_sessions, get_user_sessions_count,
     get_workout_types_with_sessions,
 )
+
+
+@pytest.mark.asyncio
+async def test_warmup_does_not_replace_last_working_suggestion(session):
+    user = User(tg_id=1, full_name="Test")
+    workout = WorkoutType(user=user, name="Верх")
+    exercise = Exercise(workout_type=workout, name="Жим лёжа")
+    session.add(exercise)
+    await session.flush()
+    workout_session = WorkoutSession(user_id=user.id, workout_type_id=workout.id)
+    session.add(workout_session)
+    await session.flush()
+    working = SessionSet(session_id=workout_session.id, exercise_id=exercise.id,
+                         set_number=1, reps=5, weight_kg="70", completed=True)
+    warmup = SessionSet(session_id=workout_session.id, exercise_id=exercise.id,
+                        set_number=2, reps=20, weight_kg="Пустой гриф",
+                        completed=True, is_warmup=True)
+    session.add_all([working, warmup])
+    await session.flush()
+
+    assert await get_last_completed_set(session, user.id, exercise.id) is working
+    assert await get_last_completed_set(session, user.id, exercise.id, is_warmup=True) is warmup
 
 
 @pytest.mark.asyncio

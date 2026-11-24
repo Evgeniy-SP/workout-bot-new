@@ -20,8 +20,8 @@ def compare_exercise(
     current: list[SessionSet], previous: list[SessionSet],
 ) -> tuple[str, str] | None:
     """Возвращает значок и описание изменений при наличии двух результатов."""
-    now = [(s.set_number, _load(s)) for s in current if s.completed]
-    before = [(s.set_number, _load(s)) for s in previous if s.completed]
+    now = _working_loads(current)
+    before = _working_loads(previous)
     if not now or not before:
         return None
 
@@ -63,6 +63,15 @@ def compare_exercise(
 
 def format_set_count(count: int) -> str:
     return _counted(count, ("подход", "подхода", "подходов"))
+
+
+def _working_loads(sets: list[SessionSet]) -> list[tuple[int, _Load]]:
+    ordered = sorted((s for s in sets if s.completed and not s.is_warmup),
+                     key=lambda s: s.set_number)
+    return [
+        (index, _load(s))
+        for index, s in enumerate(ordered, 1)
+    ]
 
 
 def _counted(count: int, forms: tuple[str, str, str]) -> str:

@@ -30,8 +30,9 @@ router = Router()
 def _weight_entry_text(ex: Exercise, reps: int, data: dict) -> str:
     weight = data.get("suggested_weight", ex.weight_kg)
     source = data.get("weight_hint_source", "План")
+    marker = " · 🔥 Разминка" if data.get("is_warmup") else ""
     return (
-        f"🏋️ <b>{ex.name}</b>\n\n"
+        f"🏋️ <b>{escape(ex.name)}</b>{marker}\n\n"
         f"Повторов: <b>{reps}</b>.\n"
         "Теперь введи вес (снаряд).\n"
         f"<i>{source}:</i> <code>{escape(format_weight(weight))}</code>\n\n"
@@ -54,9 +55,12 @@ async def cb_save_planned(callback: CallbackQuery, session: AsyncSession,
         return
 
     # Определяем плановые значения
-    last_set = await get_last_completed_set(session, ws.user_id, ex_id)
-    planned_weight = last_set.weight_kg if last_set and last_set.weight_kg else ex.weight_kg
-    planned_reps = last_set.reps if last_set and last_set.reps else ex.reps
+    sets = (await get_sets_grouped(session, session_id)).get(ex_id, [])
+    last_set = next((s for s in reversed(sets) if s.completed and not s.is_warmup), None)
+    if not last_set:
+        last_set = await get_last_completed_set(session, ws.user_id, ex_id, current_session_id=session_id)
+    planned_weight = last_set.weight_kg if last_set else ex.weight_kg
+    planned_reps = last_set.reps if last_set else ex.reps
 
     if ex.kind != "strength":
         planned_duration = last_set.duration_seconds if last_set and last_set.duration_seconds else ex.duration_seconds
@@ -83,7 +87,6 @@ async def cb_save_planned(callback: CallbackQuery, session: AsyncSession,
     )
     await session.commit()
 
-    sets = (await get_sets_grouped(session, session_id)).get(ex_id, [])
     set_num = next_set_num(sets)
 
     new_set = SessionSet(
@@ -113,14 +116,16 @@ async def cb_save_planned(callback: CallbackQuery, session: AsyncSession,
 
 
 @router.callback_query(F.data.startswith("tr_custom:"))
+@router.callback_query(F.data.startswith("tr_warmup:"))
 async def cb_custom_start(callback: CallbackQuery, session: AsyncSession,
                           state: FSMContext):
-    _, sess_str, ex_str = callback.data.split(":")
+    action, sess_str, ex_str = callback.data.split(":")
+    warmup = action == "tr_warmup"
     session_id = int(sess_str)
     ex_id = int(ex_str)
 
     ex = await session.get(Exercise, ex_id)
-    if not ex:
+    if not ex or (warmup and ex.kind != "strength"):
         return await callback.answer("Не найдено", show_alert=True)
 
     existing_id = None
@@ -131,10 +136,12 @@ async def cb_custom_start(callback: CallbackQuery, session: AsyncSession,
             existing_id = completed[0].id
 
     ws = await session.get(WorkoutSession, session_id)
+    if not ws or ws.finished_at or ex.workout_type_id != ws.workout_type_id:
+        return await callback.answer("Тренировка недоступна", show_alert=True)
 
     # Ищем подсказку для повторов
     sets = (await get_sets_grouped(session, session_id)).get(ex_id, [])
-    completed = [s for s in sets if s.completed]
+    completed = [s for s in sets if s.completed and bool(s.is_warmup) == warmup]
 
     if completed:
         # Берем из последнего подхода в ТЕКУЩЕЙ тренировке
@@ -143,7 +150,9 @@ async def cb_custom_start(callback: CallbackQuery, session: AsyncSession,
         history = f"<i>В предыдущем подходе:</i> <code>{completed[-1].reps}</code> повторений"
     else:
         # Если сегодня еще не делали, берем из истории
-        last_set = await get_last_completed_set(session, ws.user_id, ex_id, current_session_id=session_id)
+        last_set = await get_last_completed_set(
+            session, ws.user_id, ex_id, current_session_id=session_id, is_warmup=warmup,
+        )
         if last_set:
             suggested_weight = last_set.weight_kg
             weight_hint_source = "В прошлый раз"
@@ -162,14 +171,15 @@ async def cb_custom_start(callback: CallbackQuery, session: AsyncSession,
         temp_weight="",
         suggested_weight=suggested_weight,
         weight_hint_source=weight_hint_source,
+        is_warmup=warmup,
     )
 
     if ex.kind == "strength":
-        set_num = len(completed) + 1
+        set_label = "🔥 Разминочный подход" if warmup else f"подход {len(completed) + 1}"
         await state.set_state(TrainingFSM.entering_reps)
 
         await callback.message.edit_text(
-            f"🏋️ <b>{ex.name}</b> — подход {set_num}\n\n"
+            f"🏋️ <b>{ex.name}</b> — {set_label}\n\n"
             f"{history}\n\n"
             f"Сколько повторов сделал? Введи число:",
             reply_markup=numeric_keypad_kb()
@@ -342,6 +352,7 @@ async def _save_custom_set(message: Message, state: FSMContext,
         weight_kg=weight,
         duration_seconds=duration,
         completed=True,
+        is_warmup=bool(data.get("is_warmup")),
         completed_at=datetime.now(timezone.utc)
     )
     session.add(new_set)
@@ -362,7 +373,7 @@ async def _save_custom_set(message: Message, state: FSMContext,
     pr_text = await _build_pr_notification(session, session_id, ex_id, new_set)
 
     all_sets = (await get_sets_grouped(session, session_id)).get(ex_id, [])
-    done = sum(1 for s in all_sets if s.completed)
+    done = sum(1 for s in all_sets if s.completed and not s.is_warmup)
     plan = (ex.sets or 1) if ex.kind == "strength" else 1
 
     await state.clear()
@@ -401,7 +412,7 @@ async def cb_edit_set(callback: CallbackQuery, session: AsyncSession,
     set_id = int(set_str)
 
     target = await session.get(SessionSet, set_id)
-    if not target:
+    if not target or target.session_id != session_id:
         return await callback.answer("Подход не найден", show_alert=True)
 
     ex = await session.get(Exercise, target.exercise_id)
@@ -411,13 +422,15 @@ async def cb_edit_set(callback: CallbackQuery, session: AsyncSession,
     # Ищем подсказку для повторов (исключая текущий редактируемый подход)
     ws = await session.get(WorkoutSession, session_id)
     sets = (await get_sets_grouped(session, session_id)).get(ex.id, [])
-    completed = [s for s in sets if s.completed and s.id != set_id]
+    completed = [s for s in sets if s.completed and s.id != set_id
+                 and s.is_warmup == target.is_warmup]
 
     if completed:
         suggested_reps = completed[-1].reps
         history_text = f"<i>В предыдущем подходе:</i> <code>{suggested_reps}</code> повторений"
     else:
-        last_set = await get_last_completed_set(session, ws.user_id, ex.id, current_session_id=session_id)
+        last_set = await get_last_completed_set(session, ws.user_id, ex.id,
+                                                current_session_id=session_id, is_warmup=target.is_warmup)
         if last_set:
             suggested_reps = last_set.reps
             history_text = f"<i>В прошлый раз:</i> <code>{suggested_reps}</code> повторений"
@@ -433,6 +446,7 @@ async def cb_edit_set(callback: CallbackQuery, session: AsyncSession,
         temp_num="",
         suggested_weight=target.weight_kg,
         weight_hint_source="Вес этого подхода",
+        is_warmup=False,
     )
     await state.set_state(TrainingFSM.entering_reps)
 
@@ -441,9 +455,36 @@ async def cb_edit_set(callback: CallbackQuery, session: AsyncSession,
         f"🏋️ <b>{ex.name}</b> — подход {target.set_number}\n\n"
         f"{history_text}\n\n"
         f"Сколько повторов сделал? Введи число:",
-        reply_markup=numeric_keypad_kb(),
+        reply_markup=numeric_keypad_kb(
+            extra_button=InlineKeyboardButton(
+                text="✅ Сделать рабочим" if target.is_warmup else "🔥 Отметить как разминку",
+                callback_data=f"tr_set_kind:{session_id}:{set_id}:{int(not target.is_warmup)}",
+            ),
+        ) if ex.kind == "strength" else numeric_keypad_kb(),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("tr_set_kind:"))
+async def cb_set_kind(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    _, session_id, set_id, warmup = callback.data.split(":")
+    ws = await session.get(WorkoutSession, int(session_id))
+    target = await session.get(SessionSet, int(set_id))
+    if not ws or ws.finished_at or not target or target.session_id != ws.id or not target.completed:
+        return await callback.answer("Подход недоступен", show_alert=True)
+    ex = await session.get(Exercise, target.exercise_id)
+    from app.services.training_service import get_user
+    user = await get_user(session, callback.from_user.id)
+    if not user or ws.user_id != user.id or not ex or ex.kind != "strength":
+        return await callback.answer("Подход недоступен", show_alert=True)
+    target.is_warmup = warmup == "1"
+    await session.commit()
+    await state.clear()
+    result = await render_approach_screen(session, ws.id, ex.id)
+    if result:
+        body, kb = result
+        await callback.message.edit_text(body, reply_markup=kb)
+    await callback.answer("Разминка" if target.is_warmup else "Рабочий подход")
 
 
 @router.callback_query(F.data.startswith("tr_add_set:"))
@@ -458,7 +499,7 @@ async def cb_add_set(callback: CallbackQuery, session: AsyncSession,
         return await callback.answer("Не найдено", show_alert=True)
 
     sets = (await get_sets_grouped(session, session_id)).get(ex_id, [])
-    completed = [s for s in sets if s.completed]
+    completed = [s for s in sets if s.completed and not s.is_warmup]
     set_num = len(completed) + 1
 
     if completed:
@@ -487,6 +528,7 @@ async def cb_add_set(callback: CallbackQuery, session: AsyncSession,
         temp_weight="",
         suggested_weight=weight,
         weight_hint_source=source,
+        is_warmup=False,
     )
     await state.set_state(TrainingFSM.entering_reps)
 
@@ -556,10 +598,13 @@ async def cb_edit_menu(callback: CallbackQuery, session: AsyncSession):
     sizes = []
 
     # Выводим все выполненные подходы в виде кнопок
+    working_number = 0
     for s in completed:
         weight_text = format_weight(s.weight_kg)
+        working_number += not s.is_warmup
+        label = "🔥 Разминка" if s.is_warmup else f"✏️ Подход {working_number}"
         kb.button(
-            text=f"✏️ Подход {s.set_number}: {s.reps}×{weight_text}",
+            text=f"{label}: {s.reps}×{weight_text}",
             callback_data=f"tr_edit_set:{session_id}:{s.id}"
         )
 
@@ -696,6 +741,7 @@ async def cb_weight_input(callback: CallbackQuery, state: FSMContext, session: A
                 session_id=session_id, exercise_id=ex_id,
                 set_number=next_set_num(sets),
                 reps=reps, weight_kg=weight_str, completed=True,
+                is_warmup=bool(data.get("is_warmup")),
                 completed_at=datetime.now(timezone.utc)
             )
             session.add(new_set)
@@ -885,6 +931,9 @@ async def _build_pr_notification(session: AsyncSession,
 
     Работает для силовых (вес / повторы) и кардио (время).
     """
+    if new_set.is_warmup:
+        return None
+
     from app.services.pr_service import (
         build_pr_message, classify_duration_pr, raw_session_pr_events,
         session_pr_events,
@@ -901,11 +950,11 @@ async def _build_pr_notification(session: AsyncSession,
     # рекорд — только относительно прошлых тренировок
     history = await get_exercise_history(session, ws.user_id, ex.name, ex.kind)
     prior = [s for s in history
-             if not s.session or s.session.id != session_id]
+             if not s.is_warmup and (not s.session or s.session.id != session_id)]
 
     if ex.kind == "strength":
         current = [s for s in all_groups.get(ex_id, [])
-                   if s.completed and s.weight_kg and s.reps]
+                   if s.completed and not s.is_warmup and s.weight_kg and s.reps]
         # Сообщение шлём, только если подход — лучший в СВОЁМ упражнении
         # (дедуп пирамиды: из 60/70/80 сообщения идут на каждом шаге,
         # но в итогах тренировки останется только 80)

@@ -226,7 +226,8 @@ def pr_exercises(all_sets: list, start: date, end: date) -> list[tuple[str, str,
     records: dict[tuple[str, str], str] = {}
     for workout_set in sorted(all_sets, key=_sort_key):
         session = workout_set.session
-        if not session or session.finished_at is None or not workout_set.completed:
+        if (not session or session.finished_at is None or not workout_set.completed
+                or getattr(workout_set, "is_warmup", False)):
             continue
         day = _day(workout_set)
         if day is None:
@@ -256,6 +257,8 @@ def count_pr_events(all_sets: list) -> int:
     """
     total, prior = 0, []
     for s in sorted(all_sets, key=_sort_key):
+        if getattr(s, "is_warmup", False):
+            continue
         if _pr_kind(s, prior):
             total += 1
         prior.append(s)
@@ -275,6 +278,8 @@ def weight_gain_achievements(all_sets: list) -> dict:
     """
     groups: dict[tuple, list] = defaultdict(list)
     for s in all_sets:
+        if getattr(s, "is_warmup", False):
+            continue
         w, _ = split_weight(getattr(s, "weight_kg", None))
         if w is None or not getattr(s, "reps", None) or _day(s) is None:
             continue

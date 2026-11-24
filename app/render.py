@@ -66,7 +66,7 @@ def render_training_list(wt: WorkoutType, all_exercises: list[Exercise],
     total_ex = 0
     for ex in all_exercises:
         sets = sets_by_ex.get(ex.id, [])
-        done_sets = sum(1 for s in sets if s.completed)
+        done_sets = sum(1 for s in sets if s.completed and not getattr(s, "is_warmup", False))
         plan_sets = (ex.sets or 0) if ex.kind == "strength" else 1
         is_done = done_sets >= plan_sets
 
@@ -78,7 +78,7 @@ def render_training_list(wt: WorkoutType, all_exercises: list[Exercise],
     # 2. Выводим в список ТОЛЬКО видимые (обязательные) упражнения
     for i, ex in enumerate(visible_exercises, start=1):
         sets = sets_by_ex.get(ex.id, [])
-        done_sets = sum(1 for s in sets if s.completed)
+        done_sets = sum(1 for s in sets if s.completed and not getattr(s, "is_warmup", False))
         plan_sets = (ex.sets or 0) if ex.kind == "strength" else 1
         is_done = done_sets >= plan_sets
 
@@ -137,7 +137,8 @@ def render_approach(ex: Exercise, set_num: int, planned_reps: int | None,
                     current_note: str | None = None,
                     last_date: str | None = None,
                     is_skipped: bool = False, # <--- ДОБАВИЛИ ПАРАМЕТР
-                    record_str: str | None = None) -> str: # C2.6 Блок 3
+                    record_str: str | None = None,
+                    has_warmups: bool = False) -> str:
     from app.utils import format_duration
 
     # Статус завершения
@@ -156,10 +157,11 @@ def render_approach(ex: Exercise, set_num: int, planned_reps: int | None,
             history_text = f"📋 <b>План: {display_reps} × {display_weight}</b>"
 
         done_sets = set_num - 1
+        progress_label = "Рабочих по плану" if has_warmups else "Выполнено"
         record_line = f"\n🏆 Рекорд: <b>{record_str}</b>" if record_str else ""
         blockquote = (
             f"<blockquote>"
-            f"📈 Выполнено: <b>{done_sets}</b> из <b>{ex.sets}</b>{skipped_status}\n" # <--- ВСТАВИЛИ СТАТУС
+            f"📈 {progress_label}: <b>{done_sets}</b> из <b>{ex.sets}</b>{skipped_status}\n"
             f"📍 Текущий: <b>Подход {set_num}</b>\n"
             f"{history_text}"
             f"{record_line}"
@@ -268,10 +270,15 @@ def render_strength_summary(ex: Exercise, sets: list,
     lines.append(f"{congrats}\n")
     lines.append("📋 <b>Выполненные подходы:</b>")
 
+    working_number = 0
     for s in sets:
         reps = s.reps or 0
         weight_text = format_weight(s.weight_kg)
-        lines.append(f"✅ <b>{s.set_number}.</b> {reps} × <b>{weight_text}</b>")
+        if getattr(s, "is_warmup", False):
+            lines.append(f"🔥 Разминка · {reps} × <b>{weight_text}</b>")
+        else:
+            working_number += 1
+            lines.append(f"✅ <b>{working_number}.</b> {reps} × <b>{weight_text}</b>")
 
     if last_reps or last_weight:
         date_str = f" ({last_date})" if last_date else ""
@@ -383,7 +390,8 @@ def render_history_details(ws) -> str:
         for i, s in enumerate(sets):
             if ex.kind == "strength":
                 weight_str = format_weight(s.weight_kg)
-                text += f"  ▫️ {s.reps} × {weight_str}"
+                marker = "🔥 Разминка ·" if getattr(s, "is_warmup", False) else "▫️"
+                text += f"  {marker} {s.reps} × {weight_str}"
             else:
                 dur_str = format_duration(s.duration_seconds)
                 text += f"  ▫️ {dur_str}"

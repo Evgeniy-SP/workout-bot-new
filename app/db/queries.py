@@ -77,7 +77,7 @@ async def get_previous_finished_session(
 
 async def get_last_completed_set(
         session: AsyncSession, user_id: int, exercise_id: int,
-        current_session_id: int | None = None
+        current_session_id: int | None = None, *, is_warmup: bool = False,
 ) -> SessionSet | None:
     """Последний успешно выполненный подход (исключая текущую сессию)."""
     stmt = (
@@ -87,6 +87,7 @@ async def get_last_completed_set(
             WorkoutSession.user_id == user_id,
             SessionSet.exercise_id == exercise_id,
             SessionSet.completed == True,
+            SessionSet.is_warmup.is_(is_warmup),
         )
     )
 

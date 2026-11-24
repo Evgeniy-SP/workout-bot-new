@@ -93,3 +93,14 @@ def test_reports_fewer_sets_even_when_paired_sets_are_unchanged():
 
     assert compare_exercise(current, previous) == ("🔴", "3 → 2 подхода")
     assert format_set_count(1) == "1 подход"
+
+
+def test_warmups_do_not_shift_working_set_numbers():
+    previous = _sets((20, "Пустой гриф"), (5, "70"), (5, "70"))
+    current = _sets((20, "Пустой гриф"), (10, "50"), (5, "70"), (6, "70"))
+    previous[0].is_warmup = True
+    current[0].is_warmup = current[1].is_warmup = True
+    assert compare_exercise(current, previous) == (
+        "✅", "2-й подход: было 5 × 70 кг, стало 6 × 70 кг (+1 повтор) 🔥",
+    )
+    assert compare_exercise(current[:2], previous) is None

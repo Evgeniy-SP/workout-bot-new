@@ -3,7 +3,7 @@ from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
-from app.db.models import MonthlyChallengeResult
+from app.db.models import MonthlyChallengeResult, SessionSet
 
 engine = create_async_engine(
     settings.database_url,
@@ -18,13 +18,20 @@ async_session_maker = async_sessionmaker(
 
 
 async def ensure_db_schema() -> None:
-    """Проверить, что к базе бота применена миграция архива."""
+    """Проверить наличие схемы архива и отметок разминки."""
     async with engine.connect() as conn:
         has_archive = await conn.run_sync(
             lambda sync_conn: inspect(sync_conn).has_table(MonthlyChallengeResult.__tablename__),
         )
-    if not has_archive:
+        if not has_archive:
+            raise RuntimeError(
+                "В базе бота нет таблицы monthly_challenge_results. "
+                "Проверь адрес базы и примени миграции Alembic перед запуском."
+            )
+        set_columns = await conn.run_sync(
+            lambda sync_conn: inspect(sync_conn).get_columns(SessionSet.__tablename__),
+        )
+    if not any(column["name"] == "is_warmup" for column in set_columns):
         raise RuntimeError(
-            "В базе бота нет таблицы monthly_challenge_results. "
-            "Проверь адрес базы и примени миграции Alembic перед запуском."
+            "В базе бота нет отметок разминки. Проверь адрес базы и примени миграцию 0004."
         )

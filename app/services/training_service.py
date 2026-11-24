@@ -8,6 +8,7 @@ import random
 import re
 
 from datetime import datetime, timezone
+from html import escape
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,7 +100,7 @@ async def render_approach_screen(
             for i in range(current_idx + 1, len(main_exercises)):
                 n_ex = main_exercises[i]
                 n_sets = sets_by_ex.get(n_ex.id, [])
-                n_done = sum(1 for s in n_sets if s.completed)
+                n_done = sum(1 for s in n_sets if s.completed and not s.is_warmup)
                 n_plan = (n_ex.sets or 0) if n_ex.kind == "strength" else 1
                 if n_done < n_plan:
                     next_ex_id = n_ex.id
@@ -109,7 +110,7 @@ async def render_approach_screen(
                 for i in range(0, current_idx):
                     n_ex = main_exercises[i]
                     n_sets = sets_by_ex.get(n_ex.id, [])
-                    n_done = sum(1 for s in n_sets if s.completed)
+                    n_done = sum(1 for s in n_sets if s.completed and not s.is_warmup)
                     n_plan = (n_ex.sets or 0) if n_ex.kind == "strength" else 1
                     if n_done < n_plan:
                         next_ex_id = n_ex.id
@@ -223,6 +224,7 @@ async def render_approach_screen(
 
     # ─── СИЛОВОЕ ───
     plan = ex.sets or 0
+    working = [s for s in completed if not s.is_warmup]
     last_set = await get_last_completed_set(session, ws.user_id, ex_id,
                                             current_session_id=session_id)
     last_reps = last_set.reps if last_set else None
@@ -248,14 +250,14 @@ async def render_approach_screen(
     history_sets = await get_exercise_history(session, ws.user_id,
                                               ex.name, ex.kind)
     weighted = [s for s in history_sets
-                if parse_weight(getattr(s, "weight_kg", None)) is not None]
+                if not s.is_warmup and parse_weight(s.weight_kg) is not None]
     if weighted:
         best = max(weighted, key=lambda s: parse_weight(s.weight_kg))
         rec_date = to_msk(best.session.started_at).strftime("%d.%m.%y")
         record_str = f"{format_weight(best.weight_kg)} от {rec_date}"
 
     # === ГЛАВНОЕ ИЗМЕНЕНИЕ: ЕСЛИ is_skipped, ПРИНУДИТЕЛЬНО ПОКАЗЫВАЕМ ИТОГИ ===
-    if is_skipped or (plan > 0 and len(completed) >= plan):
+    if is_skipped or (plan > 0 and len(working) >= plan):
         text = render_strength_summary(
             ex, completed,
             current_note=note_obj.note if note_obj else None,
@@ -273,27 +275,31 @@ async def render_approach_screen(
                                  is_skipped=is_skipped)  # <--- ПЕРЕДАЕМ СТАТУС
     else:
         # Обычный экран подхода (если не пропущено и не все сделано)
-        set_num = len(completed) + 1
-        current_last_set = completed[-1] if completed else None
+        set_num = len(working) + 1
+        current_last_set = working[-1] if working else None
         action_weight = current_last_set.weight_kg if current_last_set else (
             last_weight if last_weight else ex.weight_kg)
         action_reps = current_last_set.reps if current_last_set else (
             last_reps if last_reps else ex.reps)
         can_remove = not sets
+        warmups = [s for s in completed if s.is_warmup]
 
         text = render_approach(
             ex, set_num, ex.reps, ex.weight_kg, ex.duration_seconds,
             last_reps=last_reps, last_weight=last_weight, last_note=last_note,
             rest_time_str=rest_time_str, timer_str=timer_str,
             current_note=note_obj.note if note_obj else None,
-            last_date=last_date, record_str=record_str
+            last_date=last_date, record_str=record_str, has_warmups=bool(warmups),
         )
+        if warmups:
+            rows = [f"🔥 Разминка · {s.reps} × {escape(format_weight(s.weight_kg))}" for s in warmups]
+            text += "\n\n" + "\n".join(rows)
 
         kb = approach_kb(
             session_id, ex, set_num, action_reps, action_weight,
             ex.duration_seconds,
             can_remove=can_remove, use_history=bool(last_set),
-            is_first_set=(len(completed) == 0),
+            is_first_set=not working,
             has_timer=(timer_str is not None), completed_sets=completed
         )
 
@@ -412,7 +418,7 @@ async def render_optional_list(session: AsyncSession, session_id: int,
 
     for i, ex in enumerate(opt_exercises, start=1):
         sets = sets_by_ex.get(ex.id, [])
-        done_sets = sum(1 for s in sets if s.completed)
+        done_sets = sum(1 for s in sets if s.completed and not s.is_warmup)
         plan_sets = (ex.sets or 0) if ex.kind == "strength" else 1
 
         if done_sets == 0:
@@ -456,7 +462,7 @@ def calculate_personal_records(sets: list) -> dict:
     best_set = None
 
     for s in sets:
-        if not s.weight_kg or not s.reps:
+        if getattr(s, "is_warmup", False) or not s.weight_kg or not s.reps:
             continue
 
         match = re.search(r'\d+(?:[.,]\d+)?', s.weight_kg.replace(',', '.'))

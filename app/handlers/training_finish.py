@@ -295,7 +295,7 @@ async def cb_finish_ask(callback: CallbackQuery, session: AsyncSession):
         if ex.id in skipped_ex_ids:
             continue
         sets = sets_by_ex.get(ex.id, [])
-        done = sum(1 for s in sets if s.completed)
+        done = sum(1 for s in sets if s.completed and not s.is_warmup)
         plan = (ex.sets or 0) if ex.kind == "strength" else 1
         if ex.is_optional and done == 0:
             continue
@@ -362,7 +362,7 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
     exercise_names = {}
     for ex_id, sets in sets_by_ex.items():
         strength_done = [s for s in sets
-                         if s.completed and s.weight_kg and s.reps]
+                         if s.completed and not s.is_warmup and s.weight_kg and s.reps]
         if not strength_done:
             continue
         ex = await session.get(Exercise, ex_id)
@@ -372,7 +372,7 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
         history = await get_exercise_history(session, ws.user_id,
                                              ex.name, ex.kind)
         prior = [s for s in history
-                 if not s.session or s.session.id != session_id]
+                 if not s.is_warmup and (not s.session or s.session.id != session_id)]
         all_pr_events.extend(session_pr_events(strength_done, prior))
 
     pr_summary_block = build_pr_summary(all_pr_events, exercise_names)
@@ -387,7 +387,7 @@ async def cb_finish_confirm(callback: CallbackQuery, session: AsyncSession,
     exercise_lines = []
     for ex in wt.exercises:
         sets = sets_by_ex.get(ex.id, [])
-        done = sum(1 for s in sets if s.completed)
+        done = sum(1 for s in sets if s.completed and not s.is_warmup)
         plan = (ex.sets or 0) if ex.kind == "strength" else 1
         early = done < plan and ex.id in skipped_ex_ids
         if ex.is_optional and done == 0 and not early:
@@ -590,7 +590,7 @@ async def cb_make_plan(callback: CallbackQuery, session: AsyncSession):
 
     # Получаем все выполненные подходы в этой сессии
     sets = (await get_sets_grouped(session, session_id)).get(ex_id, [])
-    completed = [s for s in sets if s.completed]
+    completed = [s for s in sets if s.completed and not s.is_warmup]
 
     if not completed:
         return await callback.answer("Нет выполненных подходов",

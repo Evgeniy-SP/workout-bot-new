@@ -191,7 +191,7 @@ def training_list_kb(
     main_exercises = [ex for ex in exercises if not ex.is_optional]
     for i, ex in enumerate(main_exercises, start=1):
         sets = sets_by_ex.get(ex.id, [])
-        done_sets = sum(1 for s in sets if s.completed)
+        done_sets = sum(1 for s in sets if s.completed and not getattr(s, "is_warmup", False))
         plan_sets = (ex.sets or 0) if ex.kind == "strength" else 1
 
         if skipped_ex_ids and ex.id in skipped_ex_ids:
@@ -275,6 +275,8 @@ def approach_kb(session_id: int, ex: Exercise, set_num: int,
         kb.button(text="✏️ Ввести фактически",
                   callback_data=f"tr_custom:{session_id}:{ex.id}")
         sizes.append(1)
+        kb.button(text="🔥 Добавить разминку", callback_data=f"tr_warmup:{session_id}:{ex.id}")
+        sizes.append(1)
     else:
         from app.utils import format_duration
         duration_text = format_duration(planned_duration)
@@ -323,7 +325,7 @@ def approach_kb(session_id: int, ex: Exercise, set_num: int,
         kb.button(text="🔄 Возобновить упражнение",
                   callback_data=f"tr_resume_ex:{session_id}:{ex.id}")
         sizes.append(1)
-    elif completed_sets and len(completed_sets) < (ex.sets or 1):
+    elif completed_sets and 0 < sum(not getattr(s, "is_warmup", False) for s in completed_sets) < (ex.sets or 1):
         kb.button(text="🏁 Завершить упражнение досрочно",
                   callback_data=f"tr_finish_ex:{session_id}:{ex.id}")
         sizes.append(1)
@@ -404,10 +406,14 @@ def strength_summary_kb(session_id: int, ex: Exercise, sets: list,
     sizes = []
 
     # 1. Группируем подходы (по 2 в ряд)
+    working_number = 0
     for s in sets:
         weight_text = format_weight(s.weight_kg)
+        warmup = getattr(s, "is_warmup", False)
+        working_number += not warmup
+        label = "🔥 Разминка" if warmup else f"✏️ Подход {working_number}"
         kb.button(
-            text=f"✏️ Подход {s.set_number}: {s.reps}×{weight_text}",
+            text=f"{label}: {s.reps}×{weight_text}",
             callback_data=f"tr_edit_set:{session_id}:{s.id}",
         )
 
@@ -428,6 +434,8 @@ def strength_summary_kb(session_id: int, ex: Exercise, sets: list,
     if not is_skipped:
         kb.button(text="➕ Добавить новый подход",
                   callback_data=f"tr_add_set:{session_id}:{ex.id}")
+        sizes.append(1)
+        kb.button(text="🔥 Добавить разминку", callback_data=f"tr_warmup:{session_id}:{ex.id}")
         sizes.append(1)
 
     kb.button(text="📝 Заметка к упражнению",
@@ -638,7 +646,7 @@ def optional_list_kb(session_id: int, exercises: list[Exercise],
 
     for i, ex in enumerate(exercises, start=1):
         sets = sets_by_ex.get(ex.id, [])
-        done_sets = sum(1 for s in sets if s.completed)
+        done_sets = sum(1 for s in sets if s.completed and not getattr(s, "is_warmup", False))
         plan_sets = (ex.sets or 0) if ex.kind == "strength" else 1
 
         if done_sets == 0:
@@ -1000,7 +1008,8 @@ def session_note_kb(session_id: int, has_note: bool) -> InlineKeyboardMarkup:
 
 
 def numeric_keypad_kb(prefix: str = "num",
-                      show_back: bool = False) -> InlineKeyboardMarkup:
+                      show_back: bool = False,
+                      extra_button: InlineKeyboardButton | None = None) -> InlineKeyboardMarkup:
     """Цифровая клавиатура для ввода чисел."""
     kb = InlineKeyboardBuilder()
 
@@ -1014,13 +1023,11 @@ def numeric_keypad_kb(prefix: str = "num",
     if show_back:
         kb.button(text="⬅️ Назад", callback_data=f"{prefix}:back")
 
+    if extra_button:
+        kb.add(extra_button)
     kb.button(text="❌ Отмена", callback_data="fsm_cancel")
 
-    # Если есть кнопка назад, сетка будет чуть другой
-    if show_back:
-        kb.adjust(3, 3, 3, 3, 1, 1)
-    else:
-        kb.adjust(3, 3, 3, 3, 1)
+    kb.adjust(3, 3, 3, 3, *([1] * (1 + bool(show_back) + bool(extra_button))))
 
     return kb.as_markup()
 
